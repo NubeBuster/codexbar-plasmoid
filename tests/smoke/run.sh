@@ -151,6 +151,18 @@ sleep 3
 kill "$clicks_pid" 2>/dev/null || true
 wait "$clicks_pid" 2>/dev/null || true
 
+# "About CodexBar" at the bottom of the popup opens the About page, which
+# shows the version from metadata.json.
+rm -f "$CODEXBAR_MOCK_STATE"
+plasmoidviewer -a "$(package about "$three")" -s 560x860 -f planar >"$out/popup-about.log" 2>&1 &
+about_pid=$!
+sleep "${SMOKE_WAIT:-15}"
+xdotool mousemove 248 726 click 1
+sleep 3
+shoot popup-about 560x860
+kill "$about_pid" 2>/dev/null || true
+wait "$about_pid" 2>/dev/null || true
+
 # The settings window: the General and Providers pages, and the override
 # dialog of Claude, whose seeded override gives it a ticked row.
 rm -f "$CODEXBAR_MOCK_STATE"
