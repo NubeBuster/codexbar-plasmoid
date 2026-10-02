@@ -150,7 +150,9 @@ Cost scanning is off by default because large local histories can be resource-in
 <summary><b>Providers and CodexBar's config.json</b></summary>
 <br>
 
-With CodexBar CLI 0.66 or newer, the provider list and which providers are enabled come from CodexBar's own `~/.config/codexbar/config.json`, which the CLI and the macOS app share. Providers enabled with `codexbar config enable` show up in the widget, providers from user plugins included, and ticking a provider on the **Providers** page writes the change back with `codexbar config enable` / `disable` when you click **Apply**. The first start with such a CLI copies the widget's previous selection into config.json once. Older CLIs keep the widget's own list.
+With CodexBar CLI 0.66 or newer, the provider list and which providers are enabled come from CodexBar's own `~/.config/codexbar/config.json`, which the CLI and the macOS app share. Providers enabled with `codexbar config enable` show up in the widget, providers from user plugins included, and ticking a provider on the **Providers** page writes the change back with `codexbar config enable` / `disable` when you click **Apply**. Older CLIs keep the widget's own list.
+
+The first start with such a CLI moves the widget's previous selection to config.json only while config.json still has CodexBar's default selection (Codex alone, as of CodexBar 0.70): the widget's providers are enabled there in addition, and none is disabled. A config.json you have changed wins as it is, and nothing is written to it. Every further widget follows the same rule, so it only adds its selection while config.json is still at the default; a config.json you set back to Codex alone on purpose looks just like an untouched one. If the CLI cannot read config.json, for example because it is not valid JSON, the widget keeps its own list and tries again on the next refresh.
 
 Each provider is still probed in its own `codexbar usage --provider …` process: the CLI fetches providers one after another when asked for all of them, so separate processes keep refreshes fast and one slow provider from holding up the rest.
 </details>
