@@ -61,18 +61,27 @@ expect_config() {
     fi
 }
 
+# shoot NAME WIDTHxHEIGHT saves the screen and the widget's corner of it.
+shoot() {
+    xwininfo -root -tree >"$out/$1.windows.txt" 2>&1 || true
+    import -window root "$out/$1.screen.png"
+    magick "$out/$1.screen.png" -crop "${2}+0+0" +repage "$out/$1.png"
+}
+
 # render NAME PACKAGE WIDTHxHEIGHT [plasmoidviewer options...]; every run
-# starts from a fresh config.json where only Codex is enabled.
+# starts from a fresh config.json where only Codex is enabled, or from the
+# mock's state in $config_state (space-separated) when that is set.
 render() {
     local name="$1" pkg="$2" size="$3"
     shift 3
     rm -f "$CODEXBAR_MOCK_STATE"
+    if [[ -n "${config_state:-}" ]]; then
+        tr ' ' '\n' <<<"$config_state" >"$CODEXBAR_MOCK_STATE"
+    fi
     plasmoidviewer -a "$pkg" -s "$size" "$@" >"$out/$name.log" 2>&1 &
     local pid=$!
     sleep "${SMOKE_WAIT:-15}"
-    xwininfo -root -tree >"$out/$name.windows.txt" 2>&1 || true
-    import -window root "$out/$name.screen.png"
-    magick "$out/$name.screen.png" -crop "${size}+0+0" +repage "$out/$name.png"
+    shoot "$name" "$size"
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
 }
@@ -96,12 +105,35 @@ render popup-used "$(package popup-used "$three" usageBarsShowUsed=true)" 560x86
 # A provider only config.json knows, such as a user plugin, still shows up.
 render popup-plugin "$(package plugin enabledProviders=codex,myplugin)" 560x860 -f planar
 expect_config codex myplugin
+# A config.json changed by the user wins over the widget's own list, which
+# is not written to it.
+config_state="claude myplugin" render popup-curated "$(package curated "$three")" 560x860 -f planar
+expect_config claude myplugin
 # CLIs before 0.66 keep the widget's own list and leave config.json alone.
 export CODEXBAR_MOCK_VERSION=0.65.0
 render panel-legacy "$(package legacy "$three" panelDisplayMode=logos showPercentInPanel=true)" \
     640x140 "${panel[@]}"
 unset CODEXBAR_MOCK_VERSION
 expect_config codex
+
+# A config.json the CLI cannot decode keeps the widget's own list and the
+# migration pending: once config.json can be read again, the next refresh
+# (every minute here) adds the widget's providers.
+echo broken >"$CODEXBAR_MOCK_STATE"
+plasmoidviewer -a "$(package broken "$three" refreshIntervalMinutes=1)" -s 560x860 -f planar \
+    >"$out/popup-broken.log" 2>&1 &
+broken_pid=$!
+sleep "${SMOKE_WAIT:-15}"
+shoot popup-broken 560x860
+rm -f "$CODEXBAR_MOCK_STATE"
+for _ in $(seq 90); do
+    [[ -f "$CODEXBAR_MOCK_STATE" ]] && break
+    sleep 1
+done
+sleep 3
+expect_config codex claude antigravity
+kill "$broken_pid" 2>/dev/null || true
+wait "$broken_pid" 2>/dev/null || true
 
 # Middle and double click on the merged meter run the configured command.
 marker="$work/clicked"

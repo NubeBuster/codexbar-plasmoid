@@ -423,11 +423,16 @@ PlasmoidItem {
         return true
     }
 
-    function loadConfig(force) {
+    // afterMigration marks the read that follows the one-time migration's
+    // write: once config.json reads back, the migration is done.
+    function loadConfig(force, afterMigration) {
         var command = uniqueCliCommand(commandPathPrefix + environmentFilePrefix()
             + cliInvocation("config providers --json", 30) + "; printf '\\036'; "
             + cliInvocation("config dump --json", 30), "config", cliState.generation)
-        pendingConfig[command] = { force: force === true, cliGeneration: cliState.generation }
+        pendingConfig[command] = {
+            force: force === true, afterMigration: afterMigration === true,
+            cliGeneration: cliState.generation
+        }
         executable.connectSource(command)
     }
 
@@ -614,7 +619,8 @@ PlasmoidItem {
             var list = ConfigProviders.parse(parts[0], parts.length > 1 ? parts[1] : "",
                                              Catalog.cliProviderId)
             if (list === null) {
-                // config.json could not be read: keep the widget's own list.
+                // config.json could not be read: keep the widget's own list,
+                // and a pending migration waits for a read that works.
                 if (!leaveConfigMode())
                     probeAll(configReq.force)
                 return
@@ -623,8 +629,11 @@ PlasmoidItem {
                 Catalog.registerName(list[n].id, list[n].name)
             configProviderList = list
             if (!Plasmoid.configuration.configMigrated) {
-                // Once, the widget's own list becomes config.json's.
-                if (writeConfig(keyProviderIds(), configReq.force, true))
+                // Once, the widget's own providers are added to a config.json
+                // that still has CodexBar's defaults; a changed one wins.
+                if (!configReq.afterMigration
+                        && writeConfig(ConfigProviders.migratedIds(list, keyProviderIds()),
+                                       configReq.force, true))
                     return
                 Plasmoid.configuration.configMigrated = true
             }
@@ -648,9 +657,7 @@ PlasmoidItem {
             }
             if (exitCode !== 0)
                 console.warn("codexbar: config write failed, exit", exitCode)
-            else if (writeReq.migration)
-                Plasmoid.configuration.configMigrated = true
-            loadConfig(writeReq.force)
+            loadConfig(writeReq.force, writeReq.migration)
             return
         }
 
