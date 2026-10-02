@@ -2,10 +2,29 @@
 # Stand-in for the CodexBar CLI in the Plasma smoke test. Prints the recorded
 # payloads in $CODEXBAR_FIXTURES with reset times relative to now, and keeps
 # the enabled providers of its config.json in $CODEXBAR_MOCK_STATE (one
-# CodexBar id per line; missing means only the default-enabled Codex).
+# CodexBar id per line; missing means only the default-enabled Codex, and
+# "broken" a config.json the CLI cannot decode).
 fixtures="${CODEXBAR_FIXTURES:?CODEXBAR_FIXTURES is not set}"
 state="${CODEXBAR_MOCK_STATE:?CODEXBAR_MOCK_STATE is not set}"
 providers="$fixtures/providers.txt"
+decode_error="Failed to decode CodexBar config: The data isn't in the correct format."
+
+# Like CodexBar 0.70 with a config.json it cannot decode, every command but
+# --version fails; the JSON ones print an error envelope.
+if [ "$(cat "$state" 2>/dev/null)" = broken ]; then
+    case "${1:-} ${2:-}" in
+        "--version "* | "-V "*)
+            ;;
+        "config enable" | "config disable")
+            echo "Error: $decode_error" >&2
+            exit 1
+            ;;
+        *)
+            echo "[{\"provider\":\"cli\",\"source\":\"cli\",\"error\":{\"kind\":\"config\",\"code\":1,\"message\":\"$decode_error\"}}]"
+            exit 1
+            ;;
+    esac
+fi
 
 iso() { date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ; }
 
