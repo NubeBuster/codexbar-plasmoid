@@ -35,6 +35,24 @@
         <entry name="usageBarsShowUsed" type="Bool">
             <default>false</default>
         </entry>
+        <entry name="panelPaceText" type="Bool">
+            <default>false</default>
+        </entry>
+        <entry name="panelMinUsedPercent" type="Int">
+            <default>0</default>
+            <min>0</min>
+            <max>100</max>
+        </entry>
+        <entry name="panelShowWhenTimeLeftPercent" type="Int">
+            <default>0</default>
+            <min>0</min>
+            <max>100</max>
+        </entry>
+        <entry name="panelSizePercent" type="Int">
+            <default>75</default>
+            <min>40</min>
+            <max>100</max>
+        </entry>
         <entry name="separateIcons" type="Bool">
             <default>false</default>
         </entry>

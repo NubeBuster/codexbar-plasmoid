@@ -44,8 +44,8 @@ MouseArea {
     readonly property var mergedProviders: panelLayout.merged
 
     readonly property real iconSide: vertical
-        ? Math.min(Math.round(width * 0.75), Kirigami.Units.iconSizes.medium)
-        : Math.min(Math.round(height * 0.75), Kirigami.Units.iconSizes.medium)
+        ? Math.round(width * Plasmoid.configuration.panelSizePercent / 100)
+        : Math.round(height * Plasmoid.configuration.panelSizePercent / 100)
 
     implicitWidth: grid.implicitWidth + (vertical ? 0 : Kirigami.Units.smallSpacing * 2)
     implicitHeight: grid.implicitHeight + (vertical ? Kirigami.Units.smallSpacing * 2 : 0)
@@ -80,6 +80,90 @@ MouseArea {
                 lowest = pick
         }
         return lowest
+    }
+
+    // One window's pace, same rule as the Claude Code statusline
+    // (rate_limits.py get_usage_color): state 0 = under pace, 1 = on pace
+    // (within a threshold that tightens early in the window), 2 = over.
+    // Returns null without a usable window/reset time.
+    function paceInfoFor(pid, source) {
+        var pick = pickFor(pid, source)
+        if (!pick || !pick.window || !pick.window.resetsAt)
+            return null
+        var now = plasmoidRoot.nowMs
+        var resetMs = Date.parse(pick.window.resetsAt)
+        var totalMs = (Number(pick.window.windowMinutes) || (source === "weekly" ? 10080 : 300)) * 60000
+        if (isNaN(resetMs) || totalMs <= 0)
+            return null
+        var leftMs = Math.max(0, resetMs - now)
+        var timePct = Math.max(0, Math.min(100, (1 - leftMs / totalMs) * 100))
+        var usedPct = 100 - pick.remaining
+        var threshold = Math.min(Math.floor(timePct / 20), 4) + 1
+        var diff = usedPct - timePct
+        return {
+            used: usedPct,
+            timePct: timePct,
+            state: diff > threshold ? 2 : (diff < -threshold ? 0 : 1),
+            ttl: compactRoot.shortTtl(Math.floor(leftMs / 1000))
+        }
+    }
+
+    // "2h16m" / "3d5h" / "42m", as the statusline writes it.
+    function shortTtl(sec) {
+        var d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60)
+        return d > 0 ? d + "d" + h + "h" : (h > 0 ? h + "h" + m + "m" : m + "m")
+    }
+
+    // True when the provider has pace data at all, so an all-hidden panel
+    // text stays empty instead of falling back to the plain percentage.
+    function hasPaceInfoFor(pid) {
+        return Plasmoid.configuration.panelPaceText
+            && (paceInfoFor(pid, "session") !== null || paceInfoFor(pid, "weekly") !== null)
+    }
+
+    // A provider is quiet when it has pace data but every window is hidden by
+    // the panel thresholds: it then has nothing to show at all.
+    function quietFor(pid) {
+        return hasPaceInfoFor(pid) && statusTextFor(pid) === ""
+    }
+
+    // If every provider is quiet, keep them all visible (icons only) so the
+    // widget never collapses to nothing and stays clickable.
+    function allQuiet() {
+        var model = iconModel
+        for (var i = 0; i < model.length; i++) {
+            if (!quietFor(model[i]))
+                return false
+        }
+        return true
+    }
+
+    // Statusline-style panel text: "used%/elapsed%(ttl)" per window, the used
+    // figure coloured by pace. StyledText markup; "" when the pace text is off
+    // or the provider reports no window with a reset time.
+    function statusTextFor(pid) {
+        if (!Plasmoid.configuration.panelPaceText)
+            return ""
+        var colors = [Kirigami.Theme.positiveTextColor, Kirigami.Theme.neutralTextColor,
+                      Kirigami.Theme.negativeTextColor]
+        var dim = Kirigami.Theme.disabledTextColor
+        var parts = []
+        var sources = ["session", "weekly"]
+        for (var i = 0; i < sources.length; i++) {
+            var info = paceInfoFor(pid, sources[i])
+            if (!info)
+                continue
+            // Hide a quiet window: little used and plenty of time left.
+            var timeLeftPct = 100 - info.timePct
+            var showUsed = info.used >= Plasmoid.configuration.panelMinUsedPercent
+            var showTime = Plasmoid.configuration.panelShowWhenTimeLeftPercent > 0
+                           && timeLeftPct <= Plasmoid.configuration.panelShowWhenTimeLeftPercent
+            if (!showUsed && !showTime)
+                continue
+            parts.push("<font color=\"" + colors[info.state] + "\">" + Math.round(info.used) + "%</font>"
+                       + "<font color=\"" + dim + "\">/" + Math.floor(info.timePct) + "%(" + info.ttl + ")</font>")
+        }
+        return parts.join(" ")
     }
 
     function staleFor(pid) {
@@ -274,6 +358,7 @@ MouseArea {
                 required property string modelData
                 readonly property string providerId: modelData
                 spacing: Kirigami.Units.smallSpacing
+                visible: !compactRoot.quietFor(providerId) || compactRoot.allQuiet()
 
                 Item {
                     visible: compactRoot.showsLogosFor(providerItem.providerId) && providerItem.providerId !== "__merged__"
@@ -328,7 +413,13 @@ MouseArea {
 
                     PlasmaComponents3.Label {
                         font.pixelSize: Math.max(9, Math.round(compactRoot.iconSide * 0.62))
+                        textFormat: Text.StyledText
                         text: {
+                            var styled = compactRoot.statusTextFor(providerItem.providerId)
+                            if (styled !== "")
+                                return styled
+                            if (compactRoot.hasPaceInfoFor(providerItem.providerId))
+                                return ""
                             if (!percentBlock.pick)
                                 return "–"
                             var v = percentBlock.pick.remaining
@@ -343,7 +434,7 @@ MouseArea {
 
                     PlasmaComponents3.Label {
                         // Vertical panels are narrow: the countdown goes below.
-                        visible: compactRoot.vertical && percentBlock.countdown !== ""
+                        visible: compactRoot.vertical && percentBlock.countdown !== "" && !compactRoot.hasPaceInfoFor(providerItem.providerId)
                         text: percentBlock.countdown
                         font.pixelSize: Math.max(8, Math.round(compactRoot.iconSide * 0.45))
                         opacity: 0.8
