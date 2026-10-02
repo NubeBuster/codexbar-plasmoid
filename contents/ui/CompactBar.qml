@@ -5,6 +5,7 @@ import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.components as PlasmaComponents3
 import org.kde.kirigami as Kirigami
 import "code/catalog.js" as Catalog
+import "code/pace.js" as Pace
 import "code/providerOverrides.js" as ProviderOverrides
 
 // Panel representation. Default: ONE merged critter icon showing the
@@ -82,49 +83,33 @@ MouseArea {
         return lowest
     }
 
-    // One window's pace, same rule as the Claude Code statusline
-    // (rate_limits.py get_usage_color): state 0 = under pace, 1 = on pace
-    // (within a threshold that tightens early in the window), 2 = over.
-    // Returns null without a usable window/reset time.
+    // One window's pace (see code/pace.js); null without a usable window.
     function paceInfoFor(pid, source) {
         var pick = pickFor(pid, source)
-        if (!pick || !pick.window || !pick.window.resetsAt)
+        if (!pick)
             return null
-        var now = plasmoidRoot.nowMs
-        var resetMs = Date.parse(pick.window.resetsAt)
-        var totalMs = (Number(pick.window.windowMinutes) || (source === "weekly" ? 10080 : 300)) * 60000
-        if (isNaN(resetMs) || totalMs <= 0)
-            return null
-        var leftMs = Math.max(0, resetMs - now)
-        var timePct = Math.max(0, Math.min(100, (1 - leftMs / totalMs) * 100))
-        var usedPct = 100 - pick.remaining
-        var threshold = Math.min(Math.floor(timePct / 20), 4) + 1
-        var diff = usedPct - timePct
-        return {
-            used: usedPct,
-            timePct: timePct,
-            state: diff > threshold ? 2 : (diff < -threshold ? 0 : 1),
-            ttl: compactRoot.shortTtl(Math.floor(leftMs / 1000))
-        }
+        return Pace.infoFor(pick.window, source, pick.remaining, plasmoidRoot.nowMs)
     }
 
-    // "2h16m" / "3d5h" / "42m", as the statusline writes it.
-    function shortTtl(sec) {
-        var d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60)
-        return d > 0 ? d + "d" + h + "h" : (h > 0 ? h + "h" + m + "m" : m + "m")
+    function paceInfosFor(pid) {
+        return [paceInfoFor(pid, "session"), paceInfoFor(pid, "weekly")]
     }
 
     // True when the provider has pace data at all, so an all-hidden panel
     // text stays empty instead of falling back to the plain percentage.
     function hasPaceInfoFor(pid) {
-        return Plasmoid.configuration.panelPaceText
-            && (paceInfoFor(pid, "session") !== null || paceInfoFor(pid, "weekly") !== null)
+        if (!Plasmoid.configuration.panelPaceText)
+            return false
+        var infos = paceInfosFor(pid)
+        return infos[0] !== null || infos[1] !== null
     }
 
     // A provider is quiet when it has pace data but every window is hidden by
     // the panel thresholds: it then has nothing to show at all.
     function quietFor(pid) {
-        return hasPaceInfoFor(pid) && statusTextFor(pid) === ""
+        return Plasmoid.configuration.panelPaceText
+            && Pace.isQuiet(paceInfosFor(pid), Plasmoid.configuration.panelMinUsedPercent,
+                            Plasmoid.configuration.panelShowWhenTimeLeftPercent)
     }
 
     // If every provider is quiet, keep them all visible (icons only) so the
@@ -144,26 +129,11 @@ MouseArea {
     function statusTextFor(pid) {
         if (!Plasmoid.configuration.panelPaceText)
             return ""
-        var colors = [Kirigami.Theme.positiveTextColor, Kirigami.Theme.neutralTextColor,
-                      Kirigami.Theme.negativeTextColor]
-        var dim = Kirigami.Theme.disabledTextColor
-        var parts = []
-        var sources = ["session", "weekly"]
-        for (var i = 0; i < sources.length; i++) {
-            var info = paceInfoFor(pid, sources[i])
-            if (!info)
-                continue
-            // Hide a quiet window: little used and plenty of time left.
-            var timeLeftPct = 100 - info.timePct
-            var showUsed = info.used >= Plasmoid.configuration.panelMinUsedPercent
-            var showTime = Plasmoid.configuration.panelShowWhenTimeLeftPercent > 0
-                           && timeLeftPct <= Plasmoid.configuration.panelShowWhenTimeLeftPercent
-            if (!showUsed && !showTime)
-                continue
-            parts.push("<font color=\"" + colors[info.state] + "\">" + Math.round(info.used) + "%</font>"
-                       + "<font color=\"" + dim + "\">/" + Math.floor(info.timePct) + "%(" + info.ttl + ")</font>")
-        }
-        return parts.join(" ")
+        return Pace.statusText(paceInfosFor(pid), Plasmoid.configuration.panelMinUsedPercent,
+                               Plasmoid.configuration.panelShowWhenTimeLeftPercent,
+                               [Kirigami.Theme.positiveTextColor, Kirigami.Theme.neutralTextColor,
+                                Kirigami.Theme.negativeTextColor],
+                               Kirigami.Theme.disabledTextColor)
     }
 
     function staleFor(pid) {
