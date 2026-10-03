@@ -6,7 +6,7 @@
 .pragma library
 
 var PROVIDERS = {
-    // Order follows `codexbar usage --help` (CodexBar 0.70.0).
+    // Order follows `codexbar usage --help` (CodexBar 0.71.0).
     "codex":        { name: "Codex",              color: "#49A3B0", dashboard: "https://chatgpt.com/codex/cloud/settings/analytics#usage", status: "https://status.openai.com/", icon: "ProviderIcon-codex.svg", critter: "codex" },
     "openai":       { name: "OpenAI",             color: "#0F826E", dashboard: "https://platform.openai.com/usage", status: "https://status.openai.com", icon: "ProviderIcon-codex.svg" },
     "azure-openai": { name: "Azure OpenAI",       color: "#0078D4", dashboard: "https://ai.azure.com", status: "https://azure.status.microsoft/en-us/status", icon: "ProviderIcon-codex.svg" },
@@ -93,7 +93,9 @@ var PROVIDERS = {
     "atlascloud":   { name: "Atlas Cloud",        color: "#5975F5", dashboard: "https://www.atlascloud.ai/console", status: "", icon: "ProviderIcon-atlascloud.svg", minCli: "0.66.0" },
     "vercel":       { name: "Vercel AI Gateway",  color: "#FFFFFF", chipColor: "#000000", dashboard: "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway", status: "", icon: "ProviderIcon-vercel.svg", minCli: "0.66.0" },
     "llmman":       { name: "llmman",             color: "#6CC5B0", dashboard: "", status: "", icon: "ProviderIcon-llmman.svg", minCli: "0.66.0" },
-    "xkiro":        { name: "xKiro",              color: "#52C99B", dashboard: "https://xkiro.com", status: "", icon: "ProviderIcon-xkiro.svg", minCli: "0.67.0" }
+    "xkiro":        { name: "xKiro",              color: "#52C99B", dashboard: "https://xkiro.com", status: "", icon: "ProviderIcon-xkiro.svg", minCli: "0.67.0" },
+    "museai":       { name: "Muse (muse.ai)",     color: "#0668E1", dashboard: "https://muse.ai/?settings_tab=general", status: "", icon: "ProviderIcon-museai.svg", minCli: "0.71.0" },
+    "lithosai":     { name: "LithosAI",           color: "#6B7280", dashboard: "https://console.lithosai.cloud", status: "", icon: "ProviderIcon-lithosai.svg", minCli: "0.71.0" }
 }
 
 // Providers whose local logs the `codexbar cost` command can price.
