@@ -134,6 +134,25 @@ assert.deepEqual(plain(lib.changes(list, ["codex", "claude", "myplugin"])), [])
 assert.deepEqual(plain(lib.changes(null, ["codex"])), [])
 assert.deepEqual(plain(lib.enabledIds(null)), [])
 
+// A settings page keeps its own ticks on top of what the widget copied from
+// config.json while it was open.
+const base = ["codex", "claude"]
+// nothing ticked here: config.json's newer selection as it is
+assert.deepEqual(plain(lib.rebaseSelection(base, base, ["codex", "claude", "groqcloud"])),
+    ["codex", "claude", "groqcloud"])
+assert.deepEqual(plain(lib.rebaseSelection(base, base, ["codex"])), ["codex"])
+// ticked and unticked here, while the CLI enabled Groq
+assert.deepEqual(plain(lib.rebaseSelection(base, ["codex", "cursor"], ["codex", "claude", "groqcloud"])),
+    ["codex", "groqcloud", "cursor"])
+// the page wins where both changed a provider
+assert.deepEqual(plain(lib.rebaseSelection(base, ["codex"], ["codex", "claude"])), ["codex"])
+assert.deepEqual(plain(lib.rebaseSelection(["codex"], ["codex", "gemini"], ["codex", "gemini"])),
+    ["codex", "gemini"])
+assert.deepEqual(plain(lib.rebaseSelection(["codex"], ["codex", "gemini"], [])), ["gemini"])
+// the page's own Apply comes back unchanged
+assert.deepEqual(plain(lib.rebaseSelection(base, ["claude", "gemini"], ["claude", "gemini"])),
+    ["claude", "gemini"])
+
 // A failed `config enable|disable --json` step prints the CLI's error entry
 // after the results of the steps before it (CodexBar 0.66 to 0.71).
 assert.equal(lib.writeError(
