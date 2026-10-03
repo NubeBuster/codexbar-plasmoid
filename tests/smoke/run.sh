@@ -114,6 +114,10 @@ expect_config claude myplugin
 config_state="antigravity" CODEXBAR_MOCK_CRASH=antigravity render popup-crash \
     "$(package crash enabledProviders=antigravity)" 560x860 -f planar
 expect_config antigravity
+# A config.json the CLI cannot write: the migration fails, the widget keeps
+# its own list, and the popup shows the CLI's error.
+CODEXBAR_MOCK_READONLY=1 render popup-readonly "$(package readonly "$three")" 560x860 -f planar
+expect_config codex
 # CLIs before 0.66 keep the widget's own list and leave config.json alone.
 export CODEXBAR_MOCK_VERSION=0.65.0
 render panel-legacy "$(package legacy "$three" panelDisplayMode=logos showPercentInPanel=true)" \

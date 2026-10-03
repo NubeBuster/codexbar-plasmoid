@@ -34,6 +34,9 @@ PlasmoidItem {
     }
     property var pendingConfig: ({})
     property var pendingConfigWrite: ({})
+    // Orders the widget's reads and writes of config.json: one write at a
+    // time, the latest Apply wins (ConfigProviders.read and friends).
+    property var configSync: ConfigProviders.syncState()
     // Set while config.json's state is copied into the settings keys.
     property bool mirroringConfig: false
     // A failed one-time migration keeps this session on the widget's own list.
@@ -204,6 +207,8 @@ PlasmoidItem {
 
     function startCliCheck() {
         stopLoadingIndicators()
+        // The old check's config.json results are dropped with it.
+        configSync = ConfigProviders.restart(configSync)
         lastCheckedCliExecutable = cliExecutable
         cliState = CliStatus.beginCheck(cliState)
         var generation = cliState.generation
@@ -399,11 +404,15 @@ PlasmoidItem {
 
     function refreshAll(force) {
         // Read config.json first so changes made with the CLI or the app
-        // show up; the probes follow once it is read.
+        // show up; the probes follow once it is read. While a write runs,
+        // the read after it does that.
         if (CliStatus.canRunUsage(cliState.code)
                 && CliStatus.supportsConfigSource(cliState.detectedVersion)
                 && !configMigrationFailed) {
-            loadConfig(force)
+            var refresh = ConfigProviders.refresh(configSync, force)
+            configSync = refresh.state
+            if (refresh.read)
+                loadConfig(refresh.read)
             return
         }
         // Leaving config mode (an older CLI) re-runs this through
@@ -423,34 +432,48 @@ PlasmoidItem {
         return true
     }
 
-    // afterMigration marks the read that follows the one-time migration's
-    // write: once config.json reads back, the migration is done.
-    function loadConfig(force, afterMigration) {
+    // Reads config.json; token comes from ConfigProviders.refresh or readBack.
+    function loadConfig(token) {
         var command = uniqueCliCommand(commandPathPrefix + environmentFilePrefix()
             + cliInvocation("config providers --json", 30) + "; printf '\\036'; "
             + cliInvocation("config dump --json", 30), "config", cliState.generation)
-        pendingConfig[command] = {
-            force: force === true, afterMigration: afterMigration === true,
-            cliGeneration: cliState.generation
-        }
+        pendingConfig[command] = { token: token, cliGeneration: cliState.generation }
         executable.connectSource(command)
     }
 
-    // Makes config.json enable exactly the wanted providers, one write after
-    // the other so they cannot race on the file; the config is read (and
-    // probed) again afterwards. Returns false when nothing has to change.
-    function writeConfig(wanted, force, migration) {
-        var steps = ConfigProviders.changes(configProviderList, wanted)
-        if (steps.length === 0)
-            return false
+    // Runs a write from ConfigProviders.request or read: its steps one after
+    // the other, so they cannot race on the file. config.json is read back
+    // (and probed) afterwards.
+    function writeConfig(write) {
         var command = uniqueCliCommand(commandPathPrefix + environmentFilePrefix()
-            + steps.map(function (step) { return cliInvocation("config " + step, 30) }).join(" && "),
+            + write.steps.map(function (step) {
+                return cliInvocation("config " + step + " --json", 30)
+            }).join(" && "),
             "config-write", cliState.generation)
-        pendingConfigWrite[command] = {
-            force: force === true, migration: migration === true, cliGeneration: cliState.generation
-        }
+        pendingConfigWrite[command] = { write: write, cliGeneration: cliState.generation }
         executable.connectSource(command)
-        return true
+    }
+
+    // A selection applied on the settings page goes to config.json.
+    function applyProviderSelection(wanted) {
+        var request = ConfigProviders.request(configSync, configProviderList, wanted, true, false)
+        configSync = request.state
+        if (request.write)
+            writeConfig(request.write)
+    }
+
+    // Why a write to config.json failed, in the CLI's words when it gave some.
+    function configWriteErrorText(exitCode, stdout) {
+        var message = ConfigProviders.writeError(stdout)
+        if (message !== "")
+            return message
+        if (exitCode === 124 || exitCode === 137)
+            return i18n("the CodexBar CLI timed out")
+        if (exitCode === 127)
+            return i18n("the CodexBar CLI was not found")
+        if (CliStatus.isCrash(exitCode))
+            return i18n("the CodexBar CLI crashed")
+        return i18n("the CodexBar CLI failed (exit %1)", exitCode)
     }
 
     // The settings page shows config.json's state: enabledProviders mirrors
@@ -618,27 +641,30 @@ PlasmoidItem {
             var parts = (stdout || "").split("\u001e")
             var list = ConfigProviders.parse(parts[0], parts.length > 1 ? parts[1] : "",
                                              Catalog.cliProviderId)
-            if (list === null) {
+            var read = ConfigProviders.read(configSync, configReq.token, list,
+                                            Plasmoid.configuration.configMigrated, keyProviderIds())
+            configSync = read.state
+            var action = read.action
+            if (action.type === "drop")
+                return
+            if (action.type === "leave") {
                 // config.json could not be read: keep the widget's own list,
                 // and a pending migration waits for a read that works.
                 if (!leaveConfigMode())
-                    probeAll(configReq.force)
+                    probeAll(action.force)
                 return
             }
             for (var n = 0; n < list.length; n++)
                 Catalog.registerName(list[n].id, list[n].name)
             configProviderList = list
-            if (!Plasmoid.configuration.configMigrated) {
-                // Once, the widget's own providers are added to a config.json
-                // that still has CodexBar's defaults; a changed one wins.
-                if (!configReq.afterMigration
-                        && writeConfig(ConfigProviders.migratedIds(list, keyProviderIds()),
-                                       configReq.force, true))
-                    return
+            if (action.migrated)
                 Plasmoid.configuration.configMigrated = true
+            if (action.type === "write") {
+                writeConfig(action)
+                return
             }
             mirrorConfig(list)
-            probeAll(configReq.force)
+            probeAll(action.force)
             return
         }
 
@@ -647,17 +673,24 @@ PlasmoidItem {
             delete pendingConfigWrite[source]
             if (writeReq.cliGeneration !== cliState.generation)
                 return
-            if (exitCode !== 0 && writeReq.migration) {
+            // Shown in the popup and on the Providers page until a write
+            // works or it is dismissed.
+            var writeError = exitCode === 0 ? "" : configWriteErrorText(exitCode, stdout)
+            if (Plasmoid.configuration.configWriteError !== writeError)
+                Plasmoid.configuration.configWriteError = writeError
+            if (writeError !== "" && writeReq.write.migration) {
                 // Keep the widget's own list rather than losing it.
-                console.warn("codexbar: moving the provider list to config.json failed, exit", exitCode)
+                console.warn("codexbar: moving the provider list to config.json failed:", writeError)
                 configMigrationFailed = true
+                var abandoned = ConfigProviders.abandon(configSync, writeReq.write)
+                configSync = abandoned.state
                 if (!leaveConfigMode())
-                    probeAll(writeReq.force)
+                    probeAll(abandoned.force)
                 return
             }
-            if (exitCode !== 0)
-                console.warn("codexbar: config write failed, exit", exitCode)
-            loadConfig(writeReq.force, writeReq.migration)
+            if (writeError !== "")
+                console.warn("codexbar: config write failed:", writeError)
+            loadConfig(ConfigProviders.readBack(configSync, writeReq.write))
             return
         }
 
@@ -900,7 +933,7 @@ PlasmoidItem {
             // A new selection from the settings page goes to config.json;
             // copying config.json's state back into the key does not.
             if (root.componentReady && root.configMode && !root.mirroringConfig)
-                root.writeConfig(root.keyProviderIds(), true, false)
+                root.applyProviderSelection(root.keyProviderIds())
         }
         function onProviderOverridesChanged() {
             // Overrides only change how the panel draws; no re-probe needed.

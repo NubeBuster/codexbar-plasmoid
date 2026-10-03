@@ -88,3 +88,122 @@ function changes(list, wanted) {
     }
     return out
 }
+
+// The CLI's error in the output of `config enable|disable --json` steps run
+// one after the other: the step that failed prints an error entry, such as
+// [{"provider":"cli","error":{"message":"Permission denied"}}], after the
+// results of the steps before it. Empty when there is none.
+function writeError(output) {
+    var lines = String(output || "").split("\n")
+    for (var i = lines.length - 1; i >= 0; i--) {
+        var parsed = null
+        try {
+            parsed = JSON.parse(lines[i])
+        } catch (e) {
+            continue
+        }
+        var entries = Array.isArray(parsed) ? parsed : [parsed]
+        for (var j = 0; j < entries.length; j++) {
+            var error = entries[j] && entries[j].error
+            if (error && typeof error.message === "string" && error.message.trim() !== "")
+                return error.message.trim()
+        }
+    }
+    return ""
+}
+
+// ---- one write at a time ----
+// The widget changes config.json with one write at a time and reads it back
+// after each. A selection applied while a write runs waits, and a newer one
+// replaces it, so the latest Apply wins. A refresh meanwhile waits for the
+// read-back, and a read that started before a write is dropped, because it
+// may show config.json from before the write. This orders the widget's own
+// reads and writes only; the CLI, the app and other widgets write on their own.
+//
+// State: serial counts the writes, writing covers a write and its read-back,
+// queued is { wanted, force } waiting for them, and force remembers that a
+// refresh that waited or was dropped wanted crash-blocked providers probed.
+// Reads carry a token { serial, force, readBack, migration }.
+
+function syncState() {
+    return { serial: 0, writing: false, queued: null, force: false }
+}
+
+// A refresh wants config.json read. Returns { state, read }: read is the
+// token for the read to start, or null while a write runs.
+function refresh(state, force) {
+    if (state.writing)
+        return { state: Object.assign({}, state, { force: state.force || force === true }), read: null }
+    return { state: state, read: { serial: state.serial, force: force === true, readBack: false, migration: false } }
+}
+
+// Make config.json, last read as `list`, enable exactly `wanted`. Returns
+// { state, write }: write is { steps, force, migration } to run now, or null
+// when nothing has to change or a running write makes it wait.
+function request(state, list, wanted, force, migration) {
+    if (state.writing) {
+        var queued = { wanted: (wanted || []).slice(), force: force === true }
+        return { state: Object.assign({}, state, { queued: queued }), write: null }
+    }
+    var steps = changes(list, wanted)
+    if (steps.length === 0)
+        return { state: state, write: null }
+    return {
+        state: Object.assign({}, state, { serial: state.serial + 1, writing: true }),
+        write: { steps: steps, force: force === true, migration: migration === true }
+    }
+}
+
+// The token for the read-back after `write`, whether it worked or not.
+function readBack(state, write) {
+    return { serial: state.serial, force: write.force, readBack: true, migration: write.migration }
+}
+
+// A failed migration write leaves config mode for the session: the write is
+// over and nothing waits for it. Returns { state, force } for the probe.
+function abandon(state, write) {
+    return {
+        state: Object.assign({}, state, { writing: false, queued: null, force: false }),
+        force: write.force || state.force
+    }
+}
+
+// The CLI is checked again, and the old check's write and read-back results
+// will be dropped, so stop waiting for them. A waiting selection stays.
+function restart(state) {
+    return Object.assign({}, state, { writing: false, force: false })
+}
+
+// A read finished with `list`, or null when config.json could not be read.
+// `migrated` says whether the widget's own list was moved to config.json
+// (#25), `widgetIds` is that list. Returns { state, action }, by action.type:
+//   drop   a write started after this read did, so it may be outdated
+//   leave  unreadable: keep the widget's own list and probe (action.force)
+//   write  run action.steps (a write as from request) before showing anything
+//   show   mirror the list and probe (action.force)
+// action.migrated on write and show says the migration is done now.
+function read(state, token, list, migrated, widgetIds) {
+    if (!token.readBack && (state.writing || token.serial !== state.serial))
+        return { state: Object.assign({}, state, { force: state.force || token.force }), action: { type: "drop" } }
+    var force = token.force || state.force
+    var next = Object.assign({}, state, { writing: false, force: false })
+    if (list === null) {
+        next.queued = null
+        return { state: next, action: { type: "leave", force: force } }
+    }
+    if (!migrated && !token.migration) {
+        // Once, the widget's own providers are added to a config.json that
+        // still has CodexBar's defaults; a changed one wins.
+        var move = request(next, list, migratedIds(list, widgetIds), force, true)
+        if (move.write)
+            return { state: move.state, action: Object.assign({ type: "write", migrated: false }, move.write) }
+    }
+    if (next.queued !== null) {
+        var queued = next.queued
+        next.queued = null
+        var apply = request(next, list, queued.wanted, queued.force || force, false)
+        if (apply.write)
+            return { state: apply.state, action: Object.assign({ type: "write", migrated: !migrated }, apply.write) }
+    }
+    return { state: next, action: { type: "show", force: force, migrated: !migrated } }
+}
