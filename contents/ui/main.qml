@@ -746,6 +746,7 @@ PlasmoidItem {
             // An unknown --provider name makes the CLI report the providers
             // enabled in its own config; only this provider's entries count.
             var entries = Catalog.entriesForProvider(parsed, req.p)
+            var cliError = Catalog.errorForProvider(parsed, req.p)
             if (entries.length > 0 && entries[0].usage) {
                 d.entry = entries[0]
                 d.entries = entries
@@ -753,6 +754,11 @@ PlasmoidItem {
                 d.errorCode = ""
                 cliState = CliStatus.applyUsageResult(
                     cliState, req.cliGeneration, exitCode, true, false)
+            } else if (cliError !== "") {
+                // The CLI explains the failure itself, such as a missing
+                // login or a config.json it cannot decode, so it works.
+                d.error = cliError
+                d.errorCode = ""
             } else if (entries.length === 0 && Array.isArray(parsed) && parsed.length > 0) {
                 // The CLI itself works, so its state stays as it is.
                 delete d.entry

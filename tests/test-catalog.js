@@ -44,6 +44,27 @@ assert.equal(catalog.entriesForProvider([null, 3, "x"], "codex").length, 0)
 assert.equal(catalog.entriesForProvider({ provider: "codex" }, "codex").length, 0)
 assert.equal(catalog.entriesForProvider(null, "codex").length, 0)
 
+// The CLI's own error messages, as CodexBar 0.70 prints them with exit 1.
+const decodeError = "Failed to decode CodexBar config: The operation could not be completed. The data isn’t in the correct format."
+const cliEnvelope = [{ source: "cli", provider: "cli", error: { message: decodeError, code: 1, kind: "config" } }]
+assert.equal(catalog.errorForProvider(cliEnvelope, "claude"), decodeError)
+assert.equal(catalog.entriesForProvider(cliEnvelope, "claude").length, 0)
+const geminiError = [{ source: "auto", provider: "gemini",
+    error: { code: 1, message: "Not logged in to Gemini. Run 'gemini' in Terminal to authenticate.", kind: "provider" } }]
+assert.equal(catalog.errorForProvider(geminiError, "gemini"),
+    "Not logged in to Gemini. Run 'gemini' in Terminal to authenticate.")
+// another provider's error is not this one's; internal ids still match
+assert.equal(catalog.errorForProvider(geminiError, "claude"), "")
+assert.equal(catalog.errorForProvider([{ provider: "groq", error: { message: "No API key." } }], "groqcloud"),
+    "No API key.")
+// usage data, empty or malformed messages and other output are no error
+assert.equal(catalog.errorForProvider(fallbackReport, "claude"), "")
+assert.equal(catalog.errorForProvider([{ provider: "claude", error: { message: "  " } }], "claude"), "")
+assert.equal(catalog.errorForProvider([{ provider: "claude", error: { code: 1 } }], "claude"), "")
+assert.equal(catalog.errorForProvider([{ provider: "cli", error: "broken" }], "claude"), "")
+assert.equal(catalog.errorForProvider(null, "claude"), "")
+assert.equal(catalog.errorForProvider({ provider: "cli", error: { message: "x" } }, "claude"), "")
+
 // fully colored logos keep a transparent chip; near-white brands get a dark one
 assert.equal(catalog.logoBackgroundColor("codebuff"), "transparent")
 assert.equal(catalog.logoBackgroundColor("vercel"), "#000000")
