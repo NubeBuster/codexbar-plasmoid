@@ -1,5 +1,5 @@
 # Provider identifiers accepted by `codexbar usage --provider`, in the order
-# printed by `codexbar usage --help` of CodexBar CLI 0.70.0. Regenerate with:
+# printed by `codexbar usage --help` of CodexBar CLI 0.71.0. Regenerate with:
 #   codexbar usage --help | grep -o -- '--provider [^]]*' | tr '|' '\n'
 # (drop the trailing "both" and "all" selectors).
 codex
@@ -89,3 +89,5 @@ atlascloud
 vercel
 llmman
 xkiro
+museai
+lithosai
