@@ -166,6 +166,20 @@ function entriesForProvider(entries, id) {
     })
 }
 
+// The CLI's own explanation when a usage request fails: the message of the
+// provider's error entry, such as a missing login, or of the "cli" entry the
+// CLI answers with when it cannot run at all, for example while config.json
+// cannot be decoded. Empty when the response holds neither.
+function errorForProvider(entries, id) {
+    var candidates = entriesForProvider(entries, id).concat(entriesForProvider(entries, "cli"))
+    for (var i = 0; i < candidates.length; i++) {
+        var error = candidates[i].error
+        if (error && typeof error.message === "string" && error.message.trim() !== "")
+            return error.message.trim()
+    }
+    return ""
+}
+
 // --- formatting helpers (mirror CodexBar's UsageFormatter) ---
 
 function compactTokens(n) {

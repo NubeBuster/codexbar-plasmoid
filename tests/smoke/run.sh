@@ -117,11 +117,12 @@ unset CODEXBAR_MOCK_VERSION
 expect_config codex
 
 # A config.json the CLI cannot decode keeps the widget's own list and the
-# migration pending: once config.json can be read again, the next refresh
-# (every minute here) adds the widget's providers.
+# migration pending, and the card shows the CLI's error. Once config.json can
+# be read again, the next refresh (every minute here) adds the widget's
+# providers.
 echo broken >"$CODEXBAR_MOCK_STATE"
-plasmoidviewer -a "$(package broken "$three" refreshIntervalMinutes=1)" -s 560x860 -f planar \
-    >"$out/popup-broken.log" 2>&1 &
+plasmoidviewer -a "$(package broken enabledProviders=claude refreshIntervalMinutes=1)" \
+    -s 560x860 -f planar >"$out/popup-broken.log" 2>&1 &
 broken_pid=$!
 sleep "${SMOKE_WAIT:-15}"
 shoot popup-broken 560x860
@@ -131,7 +132,7 @@ for _ in $(seq 90); do
     sleep 1
 done
 sleep 3
-expect_config codex claude antigravity
+expect_config codex claude
 kill "$broken_pid" 2>/dev/null || true
 wait "$broken_pid" 2>/dev/null || true
 
