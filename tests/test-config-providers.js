@@ -134,4 +134,215 @@ assert.deepEqual(plain(lib.changes(list, ["codex", "claude", "myplugin"])), [])
 assert.deepEqual(plain(lib.changes(null, ["codex"])), [])
 assert.deepEqual(plain(lib.enabledIds(null)), [])
 
+// A failed `config enable|disable --json` step prints the CLI's error entry
+// after the results of the steps before it (CodexBar 0.66 to 0.71).
+assert.equal(lib.writeError(
+    '{"provider":"claude","enabled":true,"displayName":"Claude","configPath":"/home/u/.config/codexbar/config.json"}\n'
+    + '[{"error":{"kind":"config","code":1,"message":"Permission denied"},"provider":"cli","source":"cli"}]\n'),
+    "Permission denied")
+assert.equal(lib.writeError(JSON.stringify([{ provider: "cli", source: "cli", error: decodeError }])),
+    decodeError.message)
+assert.equal(lib.writeError('{"provider":"claude","enabled":true}\n'), "")
+assert.equal(lib.writeError(""), "")
+assert.equal(lib.writeError("Error: something\n"), "")
+assert.equal(lib.writeError(null), "")
+
+// ---- one write at a time ----
+// config.json as the ids it enables; `steps` run against it like the CLI.
+function runSteps(enabled, steps) {
+    const out = new Set(enabled)
+    for (const step of steps) {
+        const [verb, , id] = step.split(" ")
+        if (verb === "enable") out.add(id)
+        else out.delete(id)
+    }
+    return [...out]
+}
+// A read of config.json (`file`) that finishes, as main.qml passes it on.
+function finishRead(sync, token, file, migrated = true, widget = []) {
+    return lib.read(sync, token, configList(file), migrated, widget)
+}
+
+// Two Applies in a row, the second before the first write was read back:
+// disable Claude, then enable it again. The second used to be dropped,
+// because it was compared with the list read before the first write.
+{
+    let file = ["codex", "claude"]
+    const before = configList(file)
+    let sync = lib.syncState()
+    let r = lib.request(sync, before, ["codex"], true, false)
+    sync = r.state
+    const first = r.write
+    assert.deepEqual(plain(first.steps), ["disable --provider claude"])
+    r = lib.request(sync, before, ["codex", "claude"], true, false)
+    sync = r.state
+    assert.equal(r.write, null)
+    // a third Apply replaces the waiting one: the latest wins
+    r = lib.request(sync, before, ["codex", "claude", "gemini"], true, false)
+    sync = r.state
+    assert.equal(r.write, null)
+    file = runSteps(file, first.steps)
+    let done = finishRead(sync, lib.readBack(sync, first), file)
+    sync = done.state
+    assert.equal(done.action.type, "write")
+    assert.deepEqual(plain(done.action.steps), ["enable --provider claude", "enable --provider gemini"])
+    file = runSteps(file, done.action.steps)
+    done = finishRead(sync, lib.readBack(sync, done.action), file)
+    sync = done.state
+    assert.equal(done.action.type, "show")
+    assert.equal(done.action.force, true)
+    assert.deepEqual(file, ["codex", "claude", "gemini"])
+    assert.equal(sync.writing, false)
+    assert.equal(sync.queued, null)
+}
+
+// A waiting Apply that matches what the first write left needs no write.
+{
+    let file = ["codex"]
+    let sync = lib.syncState()
+    let r = lib.request(sync, configList(file), ["codex", "claude"], true, false)
+    sync = r.state
+    const write = r.write
+    sync = lib.request(sync, configList(file), ["codex", "claude"], true, false).state
+    file = runSteps(file, write.steps)
+    const done = finishRead(sync, lib.readBack(sync, write), file)
+    assert.equal(done.action.type, "show")
+    assert.equal(done.state.queued, null)
+}
+
+// A periodic read that started before an Apply's write is dropped, whether
+// it finishes before or after the write's read-back: it may show config.json
+// from before the write and would undo the Apply in the widget.
+for (const lateRead of [false, true]) {
+    let file = ["codex"]
+    let sync = lib.syncState()
+    const timer = lib.refresh(sync, false)
+    sync = timer.state
+    const oldFile = configList(file)
+    const r = lib.request(sync, configList(file), ["codex", "claude"], true, false)
+    sync = r.state
+    file = runSteps(file, r.write.steps)
+    let stale
+    if (!lateRead) {
+        stale = lib.read(sync, timer.read, oldFile, true, [])
+        assert.equal(stale.action.type, "drop")
+        sync = stale.state
+    }
+    const done = finishRead(sync, lib.readBack(sync, r.write), file)
+    sync = done.state
+    assert.equal(done.action.type, "show")
+    if (lateRead) {
+        stale = lib.read(sync, timer.read, oldFile, true, [])
+        assert.equal(stale.action.type, "drop")
+    }
+    assert.deepEqual(file, ["codex", "claude"])
+}
+
+// A refresh while a write runs reads nothing itself; the read-back probes,
+// with force when the refresh asked for it (a manual refresh).
+{
+    let sync = lib.syncState()
+    const r = lib.request(sync, configList(["codex"]), ["codex", "claude"], false, false)
+    sync = r.state
+    const manual = lib.refresh(sync, true)
+    assert.equal(manual.read, null)
+    sync = manual.state
+    const done = finishRead(sync, lib.readBack(sync, r.write), ["codex", "claude"])
+    assert.equal(done.action.type, "show")
+    assert.equal(done.action.force, true)
+    assert.equal(done.state.force, false)
+    // a dropped read's force reaches the read-back as well
+    let next = lib.syncState()
+    const timer = lib.refresh(next, true)
+    next = timer.state
+    const w = lib.request(next, configList(["codex"]), ["codex", "claude"], false, false)
+    next = w.state
+    next = lib.read(next, timer.read, configList(["codex"]), true, []).state
+    assert.equal(finishRead(next, lib.readBack(next, w.write), ["codex", "claude"]).action.force, true)
+    // reads go ahead again once the write is done
+    assert.notEqual(lib.refresh(done.state, false).read, null)
+}
+
+// A failed write reads back config.json as it is, so the widget shows that.
+{
+    let sync = lib.syncState()
+    const r = lib.request(sync, configList(["codex"]), ["codex", "claude"], true, false)
+    sync = r.state
+    const done = finishRead(sync, lib.readBack(sync, r.write), ["codex"])
+    assert.equal(done.action.type, "show")
+    assert.equal(done.state.writing, false)
+}
+
+// The migration (#25) goes through the same order: the first read writes the
+// widget's providers, its read-back records the migration as done, and an
+// Apply made meanwhile follows.
+{
+    let file = ["codex"]
+    let sync = lib.syncState()
+    const first = lib.refresh(sync, true)
+    sync = first.state
+    let done = finishRead(sync, first.read, file, false, ["codex", "claude"])
+    sync = done.state
+    assert.equal(done.action.type, "write")
+    assert.equal(done.action.migration, true)
+    assert.equal(done.action.migrated, false)
+    assert.deepEqual(plain(done.action.steps), ["enable --provider claude"])
+    const migration = done.action
+    sync = lib.request(sync, configList(file), ["codex", "claude", "cursor"], true, false).state
+    file = runSteps(file, migration.steps)
+    done = finishRead(sync, lib.readBack(sync, migration), file, false, ["codex", "claude"])
+    sync = done.state
+    assert.equal(done.action.type, "write")
+    assert.equal(done.action.migrated, true)
+    assert.deepEqual(plain(done.action.steps), ["enable --provider cursor"])
+    file = runSteps(file, done.action.steps)
+    done = finishRead(sync, lib.readBack(sync, done.action), file, true, ["codex", "claude"])
+    assert.equal(done.action.type, "show")
+    assert.equal(done.action.migrated, false)
+    assert.deepEqual(file, ["codex", "claude", "cursor"])
+    // a curated config.json needs no write and is migrated at once
+    const curatedRead = finishRead(lib.syncState(), lib.refresh(lib.syncState(), true).read,
+        ["cursor"], false, ["codex", "claude"])
+    assert.equal(curatedRead.action.type, "show")
+    assert.equal(curatedRead.action.migrated, true)
+}
+
+// A failed migration write gives up for the session, with nothing waiting.
+{
+    let sync = lib.syncState()
+    const done = finishRead(sync, lib.refresh(sync, true).read, ["codex"], false, ["codex", "claude"])
+    sync = lib.request(done.state, configList(["codex"]), ["codex"], true, false).state
+    const abandoned = lib.abandon(sync, done.action)
+    assert.equal(abandoned.state.writing, false)
+    assert.equal(abandoned.state.queued, null)
+    assert.equal(abandoned.force, true)
+}
+
+// An unreadable config.json leaves config mode and drops a waiting Apply.
+{
+    let sync = lib.syncState()
+    const r = lib.request(sync, configList(["codex"]), ["codex", "claude"], true, false)
+    sync = lib.request(r.state, configList(["codex"]), ["codex"], true, false).state
+    const done = lib.read(sync, lib.readBack(sync, r.write), null, true, [])
+    assert.equal(done.action.type, "leave")
+    assert.equal(done.action.force, true)
+    assert.equal(done.state.queued, null)
+    assert.equal(done.state.writing, false)
+}
+
+// A new CLI check drops the old check's results, so the write stops
+// counting as running; a waiting Apply goes with the next read.
+{
+    let sync = lib.syncState()
+    const r = lib.request(sync, configList(["codex"]), ["codex", "claude"], true, false)
+    sync = lib.request(r.state, configList(["codex"]), ["codex", "gemini"], true, false).state
+    sync = lib.restart(sync)
+    assert.equal(sync.writing, false)
+    const fresh = lib.refresh(sync, true)
+    assert.notEqual(fresh.read, null)
+    const done = finishRead(fresh.state, fresh.read, ["codex", "claude"])
+    assert.equal(done.action.type, "write")
+    assert.deepEqual(plain(done.action.steps), ["disable --provider claude", "enable --provider gemini"])
+}
+
 console.log("Config provider tests passed")

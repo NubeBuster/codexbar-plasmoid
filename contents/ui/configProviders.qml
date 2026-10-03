@@ -3,6 +3,7 @@ import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.kcmutils as KCM
+import org.kde.plasma.plasmoid
 import "code/catalog.js" as Catalog
 import "code/providerSources.js" as ProviderSources
 import "code/providerOverrides.js" as ProviderOverrides
@@ -91,6 +92,16 @@ KCM.SimpleKCM {
 
     ColumnLayout {
         spacing: Kirigami.Units.smallSpacing
+
+        // Read live, not as a cfg_ key: the widget sets it after Apply while
+        // this page may still be open, and Apply must not write it back.
+        Kirigami.InlineMessage {
+            Layout.fillWidth: true
+            visible: Plasmoid.configuration.configWriteError !== ""
+            type: Kirigami.MessageType.Error
+            text: i18n("Could not save the provider selection to CodexBar's config.json: %1",
+                       Plasmoid.configuration.configWriteError)
+        }
 
         QQC2.Label {
             Layout.fillWidth: true
