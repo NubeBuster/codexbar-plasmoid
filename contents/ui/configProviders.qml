@@ -5,6 +5,7 @@ import org.kde.kirigami as Kirigami
 import org.kde.kcmutils as KCM
 import org.kde.plasma.plasmoid
 import "code/catalog.js" as Catalog
+import "code/configProviders.js" as ConfigProviders
 import "code/providerSources.js" as ProviderSources
 import "code/providerOverrides.js" as ProviderOverrides
 
@@ -27,6 +28,8 @@ KCM.SimpleKCM {
     property string cfg_launchCommand
     // View filter only: not a setting, so toggling it is no pending change.
     property bool showEnabledOnly: false
+    // The enabled providers the ticks on this page started from.
+    property var baseEnabled: []
 
     readonly property var sourceLabels: [
         i18n("Auto"), i18n("Web"), i18n("CLI"), i18n("OAuth"), i18n("API")
@@ -74,10 +77,14 @@ KCM.SimpleKCM {
         return labels
     }
 
-    function enabledList() {
-        return (cfg_enabledProviders || "").split(",")
+    function idList(value) {
+        return (value || "").split(",")
             .map(function (s) { return s.trim() })
             .filter(function (s) { return s.length > 0 })
+    }
+
+    function enabledList() {
+        return idList(cfg_enabledProviders)
     }
 
     function setEnabled(id, on) {
@@ -88,6 +95,28 @@ KCM.SimpleKCM {
         if (!on && idx >= 0)
             list.splice(idx, 1)
         cfg_enabledProviders = list.join(",")
+    }
+
+    Component.onCompleted: baseEnabled = enabledList()
+
+    // The dialog writes every cfg_ key of this page on Apply and on OK, even
+    // unchanged ones, so the page follows what the widget copies from
+    // config.json while it is open: a change made with the CLI or the app,
+    // or config.json as read back after Apply. Providers ticked or unticked
+    // here keep that state; the others take config.json's.
+    Connections {
+        target: Plasmoid.configuration
+
+        function onEnabledProvidersChanged() {
+            var current = page.idList(Plasmoid.configuration.enabledProviders)
+            page.cfg_enabledProviders = ConfigProviders.rebaseSelection(
+                page.baseEnabled, page.enabledList(), current).join(",")
+            page.baseEnabled = current
+        }
+
+        function onConfigProvidersChanged() {
+            page.cfg_configProviders = Plasmoid.configuration.configProviders
+        }
     }
 
     ColumnLayout {

@@ -89,6 +89,21 @@ function changes(list, wanted) {
     return out
 }
 
+// The selection a settings page saves when it started from the enabled ids
+// `base`, shows `chosen`, and the settings now hold `current`: providers
+// ticked or unticked on the page change `current`, the others keep their
+// state there. Newly ticked ids follow current's.
+function rebaseSelection(base, chosen, current) {
+    var out = (current || []).filter(function (id) {
+        return !(base.indexOf(id) >= 0 && chosen.indexOf(id) < 0)
+    })
+    for (var i = 0; i < chosen.length; i++) {
+        if (base.indexOf(chosen[i]) < 0 && out.indexOf(chosen[i]) < 0)
+            out.push(chosen[i])
+    }
+    return out
+}
+
 // The CLI's error in the output of `config enable|disable --json` steps run
 // one after the other: the step that failed prints an error entry, such as
 // [{"provider":"cli","error":{"message":"Permission denied"}}], after the
