@@ -3,7 +3,8 @@
 # payloads in $CODEXBAR_FIXTURES with reset times relative to now, and keeps
 # the enabled providers of its config.json in $CODEXBAR_MOCK_STATE (one
 # CodexBar id per line; missing means only the default-enabled Codex, and
-# "broken" a config.json the CLI cannot decode).
+# "broken" a config.json the CLI cannot decode). Fetching the provider named
+# in $CODEXBAR_MOCK_CRASH crashes with SIGSEGV.
 fixtures="${CODEXBAR_FIXTURES:?CODEXBAR_FIXTURES is not set}"
 state="${CODEXBAR_MOCK_STATE:?CODEXBAR_MOCK_STATE is not set}"
 providers="$fixtures/providers.txt"
@@ -98,6 +99,9 @@ case "${1:-}" in
             fi
             shift
         done
+        if [ -n "$provider" ] && [ "$provider" = "${CODEXBAR_MOCK_CRASH:-}" ]; then
+            kill -SEGV $$
+        fi
         if [ -f "$fixtures/usage-$provider.json" ]; then
             serve "usage-$provider.json"
         else

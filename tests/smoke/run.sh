@@ -109,6 +109,11 @@ expect_config codex myplugin
 # is not written to it.
 config_state="claude myplugin" render popup-curated "$(package curated "$three")" 560x860 -f planar
 expect_config claude myplugin
+# A provider whose CLI process crashes says so on its card. The CLI stays
+# usable, so no setup card takes the card's place.
+config_state="antigravity" CODEXBAR_MOCK_CRASH=antigravity render popup-crash \
+    "$(package crash enabledProviders=antigravity)" 560x860 -f planar
+expect_config antigravity
 # CLIs before 0.66 keep the widget's own list and leave config.json alone.
 export CODEXBAR_MOCK_VERSION=0.65.0
 render panel-legacy "$(package legacy "$three" panelDisplayMode=logos showPercentInPanel=true)" \

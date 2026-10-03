@@ -78,8 +78,8 @@ PlasmoidItem {
             return ""
         return decodeURIComponent(url.substring(7))
     }
-    // Providers whose CLI process died with SIGSEGV are skipped by automatic
-    // refreshes. A manual refresh still retries after the CLI was upgraded.
+    // Providers whose CLI process crashed are skipped by automatic refreshes.
+    // A manual refresh still retries, for example after the CLI was upgraded.
     property var autoRefreshBlocked: ({})
     // per-provider request generation: responses from an older generation
     // (e.g. after a config change re-triggered a refresh) are discarded
@@ -564,13 +564,13 @@ PlasmoidItem {
         if (exitCode === 124 || exitCode === 137)
             return i18n("Timed out querying the CodexBar CLI")
         var required = Catalog.meta(p).minCli
-        if (exitCode !== 0 && exitCode !== 127 && exitCode !== 139 && required
+        if (exitCode !== 0 && exitCode !== 127 && !CliStatus.isCrash(exitCode) && required
                 && cliState.detectedVersion !== ""
                 && CliStatus.compareVersions(cliState.detectedVersion, required) < 0)
             return i18n("%1 needs CodexBar CLI %2 or newer (installed: %3)",
                         Catalog.meta(p).name, required, cliState.detectedVersion)
-        if (exitCode === 139)
-            return i18n("CodexBar CLI crashed — update to version %1 or newer, then retry", CliStatus.MINIMUM_VERSION)
+        if (CliStatus.isCrash(exitCode))
+            return i18n("CodexBar CLI crashed while fetching %1 — automatic refreshes skip it until you refresh manually", Catalog.meta(p).name)
         if (exitCode === 127)
             return i18n("CodexBar CLI not found — set the path in the settings")
         if (parseFailed)
@@ -732,7 +732,7 @@ PlasmoidItem {
             d.loading = false
             d.fetchedAt = Date.now()
 
-            if (exitCode === 139)
+            if (CliStatus.isCrash(exitCode))
                 autoRefreshBlocked[req.p] = true
             else
                 delete autoRefreshBlocked[req.p]
