@@ -6,7 +6,7 @@ cd "$repo_root"
 
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 
-if ! command -v node >/dev/null 2>&1; then
+if ! command -v node > /dev/null 2>&1; then
     echo "node: not available; CLI status tests cannot run" >&2
     exit 1
 fi
@@ -15,3 +15,4 @@ node tests/test-catalog.js
 node tests/test-provider-sources.js
 node tests/test-provider-overrides.js
 node tests/test-config-providers.js
+node tests/test-pace.js

@@ -5,6 +5,7 @@ import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.components as PlasmaComponents3
 import org.kde.kirigami as Kirigami
 import "code/catalog.js" as Catalog
+import "code/pace.js" as Pace
 import "code/providerOverrides.js" as ProviderOverrides
 
 // Panel representation. Default: ONE merged critter icon showing the
@@ -44,8 +45,8 @@ MouseArea {
     readonly property var mergedProviders: panelLayout.merged
 
     readonly property real iconSide: vertical
-        ? Math.min(Math.round(width * 0.75), Kirigami.Units.iconSizes.medium)
-        : Math.min(Math.round(height * 0.75), Kirigami.Units.iconSizes.medium)
+        ? Math.round(width * Plasmoid.configuration.panelSizePercent / 100)
+        : Math.round(height * Plasmoid.configuration.panelSizePercent / 100)
 
     implicitWidth: grid.implicitWidth + (vertical ? 0 : Kirigami.Units.smallSpacing * 2)
     implicitHeight: grid.implicitHeight + (vertical ? Kirigami.Units.smallSpacing * 2 : 0)
@@ -80,6 +81,66 @@ MouseArea {
                 lowest = pick
         }
         return lowest
+    }
+
+    // One window's pace (see code/pace.js); null without a usable window.
+    function paceInfoFor(pid, source) {
+        var pick = pickFor(pid, source)
+        if (!pick)
+            return null
+        return Pace.infoFor(pick.window, source, pick.remaining, plasmoidRoot.nowMs)
+    }
+
+    function paceInfosFor(pid) {
+        return [paceInfoFor(pid, "session"), paceInfoFor(pid, "weekly")]
+    }
+
+    // True when the provider has pace data at all, so an all-hidden panel
+    // text stays empty instead of falling back to the plain percentage.
+    function hasPaceInfoFor(pid) {
+        if (!Plasmoid.configuration.panelPaceText)
+            return false
+        var infos = paceInfosFor(pid)
+        return infos[0] !== null || infos[1] !== null
+    }
+
+    // A provider is quiet when it has pace data but every window is hidden by
+    // the panel thresholds: it then has nothing to show at all.
+    function quietFor(pid) {
+        return Plasmoid.configuration.panelPaceText
+            && Pace.isQuiet(paceInfosFor(pid), Plasmoid.configuration.panelMinUsedPercent,
+                            Plasmoid.configuration.panelShowWhenTimeLeftPercent,
+                            Plasmoid.configuration.panelSessionTimeLeftWarnPercent)
+    }
+
+    // If every provider is quiet, keep them all visible (icons only) so the
+    // widget never collapses to nothing and stays clickable.
+    function allQuiet() {
+        var model = iconModel
+        for (var i = 0; i < model.length; i++) {
+            if (!quietFor(model[i]))
+                return false
+        }
+        return true
+    }
+
+    // Statusline-style panel text: "used%/elapsed%(ttl)" per window, the used
+    // figure coloured by pace. StyledText markup; "" when the pace text is off
+    // or the provider reports no window with a reset time.
+    function statusTextFor(pid) {
+        if (!Plasmoid.configuration.panelPaceText)
+            return ""
+        var under = Plasmoid.configuration.panelPaceUnderColor || Kirigami.Theme.positiveTextColor
+        var onPace = Plasmoid.configuration.panelPaceOnPaceColor || Kirigami.Theme.neutralTextColor
+        var over = Plasmoid.configuration.panelPaceOverColor || Kirigami.Theme.negativeTextColor
+        var dim = Plasmoid.configuration.panelPaceDimColor || Kirigami.Theme.disabledTextColor
+        var warn = Plasmoid.configuration.panelSessionTimeLeftWarnColor || Kirigami.Theme.negativeTextColor
+        return Pace.statusText(paceInfosFor(pid), Plasmoid.configuration.panelMinUsedPercent,
+                               Plasmoid.configuration.panelShowWhenTimeLeftPercent,
+                               [under, onPace, over],
+                               dim,
+                               Plasmoid.configuration.panelSessionTimeLeftWarnPercent,
+                               warn)
     }
 
     function staleFor(pid) {
@@ -274,6 +335,7 @@ MouseArea {
                 required property string modelData
                 readonly property string providerId: modelData
                 spacing: Kirigami.Units.smallSpacing
+                visible: !compactRoot.quietFor(providerId) || compactRoot.allQuiet()
 
                 Item {
                     visible: compactRoot.showsLogosFor(providerItem.providerId) && providerItem.providerId !== "__merged__"
@@ -328,7 +390,13 @@ MouseArea {
 
                     PlasmaComponents3.Label {
                         font.pixelSize: Math.max(9, Math.round(compactRoot.iconSide * 0.62))
+                        textFormat: Text.StyledText
                         text: {
+                            var styled = compactRoot.statusTextFor(providerItem.providerId)
+                            if (styled !== "")
+                                return styled
+                            if (compactRoot.hasPaceInfoFor(providerItem.providerId))
+                                return ""
                             if (!percentBlock.pick)
                                 return "–"
                             var v = percentBlock.pick.remaining
@@ -343,7 +411,7 @@ MouseArea {
 
                     PlasmaComponents3.Label {
                         // Vertical panels are narrow: the countdown goes below.
-                        visible: compactRoot.vertical && percentBlock.countdown !== ""
+                        visible: compactRoot.vertical && percentBlock.countdown !== "" && !compactRoot.hasPaceInfoFor(providerItem.providerId)
                         text: percentBlock.countdown
                         font.pixelSize: Math.max(8, Math.round(compactRoot.iconSide * 0.45))
                         opacity: 0.8

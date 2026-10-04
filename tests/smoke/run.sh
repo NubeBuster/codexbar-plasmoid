@@ -41,9 +41,12 @@ package() {
             index($0, "<entry name=\"" key "\"") { hit = 1 }
             hit && /<default>/ { sub(/<default>.*<\/default>/, "<default>" value "</default>"); hit = 0 }
             { print }
-        ' "$xml" >"$xml.new"
+        ' "$xml" > "$xml.new"
         mv "$xml.new" "$xml"
-        grep -q -F "<default>$value</default>" "$xml" || { echo "unknown setting: $key" >&2; return 1; }
+        grep -q -F "<default>$value</default>" "$xml" || {
+            echo "unknown setting: $key" >&2
+            return 1
+        }
     done
     echo "$dir"
 }
@@ -54,8 +57,8 @@ failed=0
 expect_config() {
     local want have
     want="$(printf '%s\n' "$@" | sort | tr '\n' ' ')"
-    have="$({ cat "$CODEXBAR_MOCK_STATE" 2>/dev/null || echo codex; } | sort | tr '\n' ' ')"
-    if [[ "$want" != "$have" ]]; then
+    have="$({ cat "$CODEXBAR_MOCK_STATE" 2> /dev/null || echo codex; } | sort | tr '\n' ' ')"
+    if [[ $want != "$have" ]]; then
         echo "config.json enables [$have], expected [$want]" >&2
         failed=1
     fi
@@ -63,7 +66,7 @@ expect_config() {
 
 # shoot NAME WIDTHxHEIGHT saves the screen and the widget's corner of it.
 shoot() {
-    xwininfo -root -tree >"$out/$1.windows.txt" 2>&1 || true
+    xwininfo -root -tree > "$out/$1.windows.txt" 2>&1 || true
     import -window root "$out/$1.screen.png"
     magick "$out/$1.screen.png" -crop "${2}+0+0" +repage "$out/$1.png"
 }
@@ -75,15 +78,15 @@ render() {
     local name="$1" pkg="$2" size="$3"
     shift 3
     rm -f "$CODEXBAR_MOCK_STATE"
-    if [[ -n "${config_state:-}" ]]; then
-        tr ' ' '\n' <<<"$config_state" >"$CODEXBAR_MOCK_STATE"
+    if [[ -n ${config_state:-} ]]; then
+        tr ' ' '\n' <<< "$config_state" > "$CODEXBAR_MOCK_STATE"
     fi
-    plasmoidviewer -a "$pkg" -s "$size" "$@" >"$out/$name.log" 2>&1 &
+    plasmoidviewer -a "$pkg" -s "$size" "$@" > "$out/$name.log" 2>&1 &
     local pid=$!
     sleep "${SMOKE_WAIT:-15}"
     shoot "$name" "$size"
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
+    kill "$pid" 2> /dev/null || true
+    wait "$pid" 2> /dev/null || true
 }
 
 three="enabledProviders=codex,claude,antigravity"
@@ -98,6 +101,12 @@ render panel-override "$(package override "$three" showPercentInPanel=true \
     'providerOverrides={"claude":{"panelDisplayMode":"logos"}}')" 640x140 "${panel[@]}"
 render panel-countdown "$(package countdown "$three" panelDisplayMode=logos showPercentInPanel=true \
     showResetCountdown=true)" 640x140 "${panel[@]}"
+# Pace text per window ("used%/elapsed%(ttl)", coloured by pace); a minimum
+# of 100% hides every window, so all providers are quiet and stay as icons.
+render panel-pace "$(package pace "$three" panelDisplayMode=logos showPercentInPanel=true \
+    panelPaceText=true panelSizePercent=60)" 640x140 "${panel[@]}"
+render panel-pace-quiet "$(package pace-quiet "$three" panelDisplayMode=logos showPercentInPanel=true \
+    panelPaceText=true panelMinUsedPercent=100)" 640x140 "${panel[@]}"
 render panel-vertical "$(package vertical "$three" showPercentInPanel=true showResetCountdown=true \
     separateIcons=true)" 160x520 -c org.kde.panel -f vertical -l leftedge
 render popup "$(package popup "$three")" 560x860 -f planar
@@ -129,63 +138,69 @@ expect_config codex
 # migration pending, and the card shows the CLI's error. Once config.json can
 # be read again, the next refresh (every minute here) adds the widget's
 # providers.
-echo broken >"$CODEXBAR_MOCK_STATE"
+echo broken > "$CODEXBAR_MOCK_STATE"
 plasmoidviewer -a "$(package broken enabledProviders=claude refreshIntervalMinutes=1)" \
-    -s 560x860 -f planar >"$out/popup-broken.log" 2>&1 &
+    -s 560x860 -f planar > "$out/popup-broken.log" 2>&1 &
 broken_pid=$!
 sleep "${SMOKE_WAIT:-15}"
 shoot popup-broken 560x860
 rm -f "$CODEXBAR_MOCK_STATE"
 for _ in $(seq 90); do
-    [[ -f "$CODEXBAR_MOCK_STATE" ]] && break
+    [[ -f $CODEXBAR_MOCK_STATE ]] && break
     sleep 1
 done
 sleep 3
 expect_config codex claude
-kill "$broken_pid" 2>/dev/null || true
-wait "$broken_pid" 2>/dev/null || true
+kill "$broken_pid" 2> /dev/null || true
+wait "$broken_pid" 2> /dev/null || true
 
 # Middle and double click on the merged meter run the configured command.
 marker="$work/clicked"
 plasmoidviewer -a "$(package clicks "$three" middleClickAction=command doubleClickAction=command \
-    "launchCommand=touch $marker")" -s 640x140 "${panel[@]}" >"$out/clicks.log" 2>&1 &
+    "launchCommand=touch $marker")" -s 640x140 "${panel[@]}" > "$out/clicks.log" 2>&1 &
 clicks_pid=$!
 sleep "${SMOKE_WAIT:-15}"
 xdotool mousemove 27 70 click 2
 sleep 3
-[[ -f "$marker" ]] || { echo "Middle click did not run the command" >&2; failed=1; }
+[[ -f $marker ]] || {
+    echo "Middle click did not run the command" >&2
+    failed=1
+}
 rm -f "$marker"
 xdotool mousemove 27 70 click --repeat 2 --delay 60 1
 sleep 3
-[[ -f "$marker" ]] || { echo "Double click did not run the command" >&2; failed=1; }
-kill "$clicks_pid" 2>/dev/null || true
-wait "$clicks_pid" 2>/dev/null || true
+[[ -f $marker ]] || {
+    echo "Double click did not run the command" >&2
+    failed=1
+}
+kill "$clicks_pid" 2> /dev/null || true
+wait "$clicks_pid" 2> /dev/null || true
 
 # "About CodexBar" at the bottom of the popup opens the About page, which
 # shows the version from metadata.json.
 rm -f "$CODEXBAR_MOCK_STATE"
-plasmoidviewer -a "$(package about "$three")" -s 560x860 -f planar >"$out/popup-about.log" 2>&1 &
+plasmoidviewer -a "$(package about "$three")" -s 560x860 -f planar > "$out/popup-about.log" 2>&1 &
 about_pid=$!
 sleep "${SMOKE_WAIT:-15}"
 xdotool mousemove 248 726 click 1
 sleep 3
 shoot popup-about 560x860
-kill "$about_pid" 2>/dev/null || true
-wait "$about_pid" 2>/dev/null || true
+kill "$about_pid" 2> /dev/null || true
+wait "$about_pid" 2> /dev/null || true
 
 # The settings window: the General and Providers pages, and the override
 # dialog of Claude, whose seeded override gives it a ticked row.
 rm -f "$CODEXBAR_MOCK_STATE"
 plasmoidviewer -a "$(package settings "$three" \
     'providerOverrides={"claude":{"panelDisplayMode":"logos"}}')" -s 560x860 -f planar \
-    >"$out/settings.log" 2>&1 &
+    > "$out/settings.log" 2>&1 &
 settings_pid=$!
 sleep "${SMOKE_WAIT:-15}"
 # "Settings…" at the bottom of the popup opens the configuration window.
 xdotool mousemove 230 694 click 1
 sleep 5
 settings_window="$(xdotool search --name 'CodexBar Settings' | head -n 1)"
-if [[ -z "$settings_window" ]]; then
+if [[ -z $settings_window ]]; then
     echo "The settings window did not open" >&2
     failed=1
 else
@@ -201,22 +216,22 @@ else
     sleep 3
     import -window "$settings_window" "$out/settings-overrides.png"
 fi
-xwininfo -root -tree >"$out/settings.windows.txt" 2>&1 || true
-kill "$settings_pid" 2>/dev/null || true
-wait "$settings_pid" 2>/dev/null || true
+xwininfo -root -tree > "$out/settings.windows.txt" 2>&1 || true
+kill "$settings_pid" 2> /dev/null || true
+wait "$settings_pid" 2> /dev/null || true
 
 # The Providers page follows config.json while it is open: the CLI enables
 # Groq, the widget reads that (every minute here), and OK, which writes every
 # key of the page, keeps Groq enabled.
 rm -f "$CODEXBAR_MOCK_STATE"
 plasmoidviewer -a "$(package external "$three" refreshIntervalMinutes=1)" -s 560x860 -f planar \
-    >"$out/settings-external.log" 2>&1 &
+    > "$out/settings-external.log" 2>&1 &
 external_pid=$!
 sleep "${SMOKE_WAIT:-15}"
 xdotool mousemove 230 694 click 1
 sleep 5
 external_window="$(xdotool search --name 'CodexBar Settings' | head -n 1)"
-if [[ -z "$external_window" ]]; then
+if [[ -z $external_window ]]; then
     echo "The settings window did not open" >&2
     failed=1
 else
@@ -224,7 +239,7 @@ else
     sleep 2
     xdotool mousemove 63 100 click 1
     sleep 3
-    echo groq >>"$CODEXBAR_MOCK_STATE"
+    echo groq >> "$CODEXBAR_MOCK_STATE"
     sleep 70
     import -window "$external_window" "$out/settings-external.png"
     # OK at the bottom right closes the window and saves the page.
@@ -232,16 +247,16 @@ else
     sleep 5
     expect_config codex claude antigravity groq
 fi
-kill "$external_pid" 2>/dev/null || true
-wait "$external_pid" 2>/dev/null || true
+kill "$external_pid" 2> /dev/null || true
+wait "$external_pid" 2> /dev/null || true
 
 # QML runtime errors from the widget's own files fail the test, and so does
 # an applet or containment that could not be loaded at all.
 errors="$(grep -h -E 'contents/ui/.*(Error|Unable to assign|is not a function|Cannot read property|is not defined)|does not exist|Containment doesn.t exist' "$out"/*.log || true)"
-if [[ -n "$errors" ]]; then
+if [[ -n $errors ]]; then
     echo "QML runtime errors:" >&2
     echo "$errors" >&2
     exit 1
 fi
-[[ "$failed" == 0 ]] || exit 1
+[[ $failed == 0 ]] || exit 1
 echo "Rendered: $(cd "$out" && ls ./*.png | tr '\n' ' ')"

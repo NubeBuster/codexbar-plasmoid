@@ -3,6 +3,7 @@ import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.kcmutils as KCM
+import org.kde.kquickcontrols as KQuickControls
 
 KCM.SimpleKCM {
     id: page
@@ -13,6 +14,16 @@ KCM.SimpleKCM {
     property alias cfg_separateIcons: separateIcons.checked
     property string cfg_panelDisplayMode
     property alias cfg_hideCritters: hideCritters.checked
+    property alias cfg_panelSizePercent: panelSizeSpin.value
+    property alias cfg_panelPaceText: paceText.checked
+    property alias cfg_panelMinUsedPercent: minUsedSpin.value
+    property alias cfg_panelShowWhenTimeLeftPercent: timeLeftSpin.value
+    property alias cfg_panelSessionTimeLeftWarnPercent: sessionWarnTimeLeftSpin.value
+    property alias cfg_panelSessionTimeLeftWarnColor: sessionWarnColorButton.color
+    property alias cfg_panelPaceUnderColor: paceUnderColorButton.color
+    property alias cfg_panelPaceOnPaceColor: paceOnPaceColorButton.color
+    property alias cfg_panelPaceOverColor: paceOverColorButton.color
+    property alias cfg_panelPaceDimColor: paceDimColorButton.color
     property bool cfg_usageBarsShowUsed
     property string cfg_middleClickAction
     property string cfg_doubleClickAction
@@ -123,6 +134,89 @@ KCM.SimpleKCM {
             }
             Component.onCompleted: sync()
             onActivated: page.cfg_percentStyle = page.styleValues[currentIndex]
+        }
+
+        QQC2.SpinBox {
+            id: panelSizeSpin
+            Kirigami.FormData.label: i18n("Panel icon/text size:")
+            from: 40
+            to: 100
+            stepSize: 5
+            textFromValue: function (value) { return i18n("%1% of panel height", value) }
+        }
+
+        QQC2.CheckBox {
+            id: paceText
+            text: i18n("Show pace in the panel text (used / elapsed, time left)")
+        }
+
+        QQC2.SpinBox {
+            id: minUsedSpin
+            enabled: paceText.checked
+            Kirigami.FormData.label: i18n("Hide a window's text below:")
+            from: 0
+            to: 100
+            textFromValue: function (value) { return i18n("%1% used", value) }
+        }
+
+        QQC2.SpinBox {
+            id: timeLeftSpin
+            enabled: paceText.checked
+            Kirigami.FormData.label: i18n("...unless its time left is under:")
+            from: 0
+            to: 100
+            textFromValue: function (value) { return i18n("%1% of the window", value) }
+        }
+
+        QQC2.SpinBox {
+            id: sessionWarnTimeLeftSpin
+            enabled: paceText.checked
+            Kirigami.FormData.label: i18n("Color 5h time left when under:")
+            from: 0
+            to: 100
+            textFromValue: function (value) { return i18n("%1% of 5h window", value) }
+        }
+
+        KQuickControls.ColorButton {
+            id: sessionWarnColorButton
+            enabled: paceText.checked && sessionWarnTimeLeftSpin.value > 0
+            Kirigami.FormData.label: i18n("5h time left warning color:")
+            dialogTitle: i18n("Select 5h Time Left Warning Color")
+        }
+
+        KQuickControls.ColorButton {
+            id: paceUnderColorButton
+            enabled: paceText.checked
+            Kirigami.FormData.label: i18n("Pace ahead color:")
+            dialogTitle: i18n("Select Pace Ahead Color")
+        }
+
+        KQuickControls.ColorButton {
+            id: paceOnPaceColorButton
+            enabled: paceText.checked
+            Kirigami.FormData.label: i18n("Pace on track color:")
+            dialogTitle: i18n("Select Pace On Track Color")
+        }
+
+        KQuickControls.ColorButton {
+            id: paceOverColorButton
+            enabled: paceText.checked
+            Kirigami.FormData.label: i18n("Pace behind color:")
+            dialogTitle: i18n("Select Pace Behind Color")
+        }
+
+        KQuickControls.ColorButton {
+            id: paceDimColorButton
+            enabled: paceText.checked
+            Kirigami.FormData.label: i18n("Elapsed / dim text color:")
+            dialogTitle: i18n("Select Elapsed / Dim Text Color")
+        }
+
+        QQC2.Label {
+            Layout.maximumWidth: page.hintWidth
+            wrapMode: Text.WordWrap
+            opacity: 0.7
+            text: i18n("With the pace text on, each window (session, weekly) is shown only once it is used at least the first percentage, or when less than the second percentage of its time is left (10% of 5h is 30 min, 10% of 7d is 17h). A provider with nothing to show is hidden from the panel. 0 disables a condition; 0 for the first shows everything. When the 5-hour window's time left is below the warning percentage, its time is highlighted in the configured color.")
         }
 
         QQC2.CheckBox {
