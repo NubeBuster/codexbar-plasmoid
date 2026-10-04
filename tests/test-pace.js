@@ -57,7 +57,7 @@ assert.equal(pace.infoFor(null, "session", 50, NOW), null)
 assert.equal(pace.infoFor({}, "session", 50, NOW), null)
 assert.equal(pace.infoFor({ resetsAt: "garbage" }, "session", 50, NOW), null)
 
-const info = (used, timePct, state = pace.ON_PACE) => ({ used, timePct, state, ttl: "1h0m" })
+const info = (used, timePct, state = pace.ON_PACE, source = "session") => ({ used, timePct, state, ttl: "1h0m", source })
 
 // Shown when enough is used, or when little time is left; 0 disables the latter.
 assert.equal(pace.isShown(info(5, 10), 10, 0), false)
@@ -66,6 +66,11 @@ assert.equal(pace.isShown(info(5, 90), 10, 0), false)
 assert.equal(pace.isShown(info(5, 90), 10, 10), true)
 assert.equal(pace.isShown(info(5, 89), 10, 10), false)
 assert.equal(pace.isShown(info(0, 0), 0, 0), true)
+
+// Shown when session window time left drops below warn threshold.
+assert.equal(pace.isShown(info(5, 92, pace.ON_PACE, "session"), 10, 0, 10), true)
+assert.equal(pace.isShown(info(5, 88, pace.ON_PACE, "session"), 10, 0, 10), false)
+assert.equal(pace.isShown(info(5, 92, pace.ON_PACE, "weekly"), 10, 0, 10), false)
 
 const colors = ["G", "Y", "R"]
 const text = pace.statusText(
@@ -77,10 +82,20 @@ assert.equal(
 assert.equal(pace.statusText([info(5, 10), info(50, 10)], 10, 0, colors, "D").includes("5%"), false)
 assert.equal(pace.statusText([null, null], 0, 0, colors, "D"), "")
 
+// When 5h session time left is below the warn threshold, the time in parentheses is colored.
+const warnedText = pace.statusText(
+    [info(35, 95, pace.ON_PACE, "session"), info(35, 95, pace.ON_PACE, "weekly")],
+    0, 0, colors, "D", 10, "W")
+assert.equal(
+    warnedText,
+    '<font color="Y">35%</font><font color="D">/95%(</font><font color="W">1h0m</font><font color="D">)</font> '
+    + '<font color="Y">35%</font><font color="D">/95%(1h0m)</font>')
+
 // Quiet means pace data exists but nothing passes the thresholds.
 assert.equal(pace.isQuiet([null, null], 10, 0), false)
 assert.equal(pace.isQuiet([info(5, 10), null], 10, 0), true)
 assert.equal(pace.isQuiet([info(5, 10), info(50, 10)], 10, 0), false)
 assert.equal(pace.isQuiet([info(5, 95), null], 10, 10), false)
+assert.equal(pace.isQuiet([info(5, 95, pace.ON_PACE, "session"), null], 10, 0, 10), false)
 
 console.log("pace tests passed")

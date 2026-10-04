@@ -109,7 +109,8 @@ MouseArea {
     function quietFor(pid) {
         return Plasmoid.configuration.panelPaceText
             && Pace.isQuiet(paceInfosFor(pid), Plasmoid.configuration.panelMinUsedPercent,
-                            Plasmoid.configuration.panelShowWhenTimeLeftPercent)
+                            Plasmoid.configuration.panelShowWhenTimeLeftPercent,
+                            Plasmoid.configuration.panelSessionTimeLeftWarnPercent)
     }
 
     // If every provider is quiet, keep them all visible (icons only) so the
@@ -129,11 +130,17 @@ MouseArea {
     function statusTextFor(pid) {
         if (!Plasmoid.configuration.panelPaceText)
             return ""
+        var under = Plasmoid.configuration.panelPaceUnderColor || Kirigami.Theme.positiveTextColor
+        var onPace = Plasmoid.configuration.panelPaceOnPaceColor || Kirigami.Theme.neutralTextColor
+        var over = Plasmoid.configuration.panelPaceOverColor || Kirigami.Theme.negativeTextColor
+        var dim = Plasmoid.configuration.panelPaceDimColor || Kirigami.Theme.disabledTextColor
+        var warn = Plasmoid.configuration.panelSessionTimeLeftWarnColor || Kirigami.Theme.negativeTextColor
         return Pace.statusText(paceInfosFor(pid), Plasmoid.configuration.panelMinUsedPercent,
                                Plasmoid.configuration.panelShowWhenTimeLeftPercent,
-                               [Kirigami.Theme.positiveTextColor, Kirigami.Theme.neutralTextColor,
-                                Kirigami.Theme.negativeTextColor],
-                               Kirigami.Theme.disabledTextColor)
+                               [under, onPace, over],
+                               dim,
+                               Plasmoid.configuration.panelSessionTimeLeftWarnPercent,
+                               warn)
     }
 
     function staleFor(pid) {

@@ -43,6 +43,7 @@ function infoFor(window, source, remaining, nowMs) {
     var timePct = Math.max(0, Math.min(100, (1 - leftMs / totalMs) * 100))
     var usedPct = 100 - remaining
     return {
+        source: source,
         used: usedPct,
         timePct: timePct,
         state: stateFor(usedPct, timePct),
@@ -51,36 +52,54 @@ function infoFor(window, source, remaining, nowMs) {
 }
 
 // A window is shown when enough is used, or little time is left. A
-// showWhenTimeLeftPct of 0 turns the second condition off.
-function isShown(info, minUsedPct, showWhenTimeLeftPct) {
+// showWhenTimeLeftPct of 0 turns the second condition off. A session window is
+// also shown if its time left drops below sessionWarnTimeLeftPct so its alert
+// color is not hidden.
+function isShown(info, minUsedPct, showWhenTimeLeftPct, sessionWarnTimeLeftPct) {
     var timeLeftPct = 100 - info.timePct
+    var warn = Boolean(sessionWarnTimeLeftPct && sessionWarnTimeLeftPct > 0
+                       && info.source === "session"
+                       && timeLeftPct <= sessionWarnTimeLeftPct)
     return info.used >= minUsedPct
         || (showWhenTimeLeftPct > 0 && timeLeftPct <= showWhenTimeLeftPct)
+        || warn
 }
 
 // StyledText markup "used%/elapsed%(ttl)" per shown window, the used figure
-// coloured by state (`colors` indexed by UNDER/ON_PACE/OVER). `infos` may
-// contain nulls. "" when nothing is shown.
-function statusText(infos, minUsedPct, showWhenTimeLeftPct, colors, dimColor) {
+// coloured by state (`colors` indexed by UNDER/ON_PACE/OVER). If a 5-hour
+// (session) window has less time left than sessionWarnTimeLeftPct, its time
+// inside parentheses is styled with sessionWarnColor. `infos` may contain
+// nulls. "" when nothing is shown.
+function statusText(infos, minUsedPct, showWhenTimeLeftPct, colors, dimColor, sessionWarnTimeLeftPct, sessionWarnColor) {
     var parts = []
     for (var i = 0; i < infos.length; i++) {
         var info = infos[i]
-        if (!info || !isShown(info, minUsedPct, showWhenTimeLeftPct))
+        if (!info || !isShown(info, minUsedPct, showWhenTimeLeftPct, sessionWarnTimeLeftPct))
             continue
+        var timeLeftPct = 100 - info.timePct
+        var isWarn = Boolean(sessionWarnTimeLeftPct && sessionWarnTimeLeftPct > 0
+                             && info.source === "session"
+                             && timeLeftPct <= sessionWarnTimeLeftPct
+                             && sessionWarnColor)
+        var timePart = isWarn
+            ? "<font color=\"" + dimColor + "\">/" + Math.floor(info.timePct) + "%(</font>"
+              + "<font color=\"" + sessionWarnColor + "\">" + info.ttl + "</font>"
+              + "<font color=\"" + dimColor + "\">)</font>"
+            : "<font color=\"" + dimColor + "\">/" + Math.floor(info.timePct) + "%(" + info.ttl + ")</font>"
         parts.push("<font color=\"" + colors[info.state] + "\">" + Math.round(info.used) + "%</font>"
-                   + "<font color=\"" + dimColor + "\">/" + Math.floor(info.timePct) + "%(" + info.ttl + ")</font>")
+                   + timePart)
     }
     return parts.join(" ")
 }
 
 // Quiet: pace data exists but every window is hidden by the thresholds.
-function isQuiet(infos, minUsedPct, showWhenTimeLeftPct) {
+function isQuiet(infos, minUsedPct, showWhenTimeLeftPct, sessionWarnTimeLeftPct) {
     var any = false
     for (var i = 0; i < infos.length; i++) {
         if (!infos[i])
             continue
         any = true
-        if (isShown(infos[i], minUsedPct, showWhenTimeLeftPct))
+        if (isShown(infos[i], minUsedPct, showWhenTimeLeftPct, sessionWarnTimeLeftPct))
             return false
     }
     return any
