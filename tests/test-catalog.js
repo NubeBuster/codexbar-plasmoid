@@ -91,14 +91,51 @@ assert.equal(
     "Pace: 11% in reserve · Lasts until reset"
 )
 
+// Pace covers every window of known duration (#76), session included.
 const sessionMinutes = catalog.effectiveWindowMinutes(
     sessionExtra, "codex", "extra"
 )
 assert.equal(sessionMinutes, 300)
 assert.equal(
     catalog.paceLine(null, sessionExtra, sessionMinutes, now, "codex"),
-    ""
+    "Pace: 50% in reserve · Lasts until reset"
 )
+const monthlyWindow = { usedPercent: 80, windowMinutes: 43200, resetsAt: "2026-09-09T12:00:00Z" }
+assert.equal(catalog.paceLine(null, monthlyWindow, 43200, now, "opencodego"),
+    "Pace: 13% in deficit · Runs out in 5d")
+const dailyWindow = { usedPercent: 40, windowMinutes: 1440, resetsAt: "2026-08-31T00:00:00Z" }
+assert.equal(catalog.paceLine(null, dailyWindow, 1440, now, "myplugin"),
+    "Pace: 10% in reserve · Lasts until reset")
+// the existing guards hold for every duration: no duration, no reading, a
+// reset in the past or further away than the window, or under 3 % elapsed
+const noDuration = { usedPercent: 10, resetsAt: "2026-08-30T14:00:00Z" }
+assert.equal(catalog.effectiveWindowMinutes(noDuration, "zai", "tertiary"), 0)
+assert.equal(catalog.paceLine(null, noDuration, 0, now, "zai"), "")
+assert.equal(catalog.paceLine(null, Object.assign({}, sessionExtra, { usageKnown: false }), 300, now, "codex"), "")
+assert.equal(catalog.paceLine(null, Object.assign({}, sessionExtra, { resetsAt: "2026-08-30T11:00:00Z" }), 300, now, "codex"), "")
+assert.equal(catalog.paceLine(null, Object.assign({}, sessionExtra, { resetsAt: "2026-08-30T18:00:00Z" }), 300, now, "codex"), "")
+assert.equal(catalog.paceLine(null, Object.assign({}, sessionExtra, { resetsAt: "2026-08-30T16:55:00Z" }), 300, now, "codex"), "")
+
+// The CLI's pace payload belongs to the slot it is reported for, whatever the
+// window's duration (opencode-go paces its 5-hour, weekly and monthly slots).
+const opencodeGo = {
+    pace: {
+        primary: { summary: "6% in reserve | Expected 6% used | Lasts until reset" },
+        secondary: null,
+        tertiary: { summary: "11% in reserve | Expected 30% used | Lasts until reset" },
+    },
+}
+assert.equal(catalog.paceLine(catalog.slotPace(opencodeGo, "primary"), sessionExtra, 300, now, "opencodego"),
+    "Pace: 6% in reserve · Lasts until reset")
+assert.equal(catalog.paceLine(catalog.slotPace(opencodeGo, "tertiary"), monthlyWindow, 43200, now, "opencodego"),
+    "Pace: 11% in reserve · Lasts until reset")
+// a slot without a payload falls back to the local reconstruction
+assert.equal(catalog.slotPace(opencodeGo, "secondary"), null)
+assert.equal(catalog.paceLine(catalog.slotPace(opencodeGo, "secondary"), weeklyExtra, 10080, now, "opencodego"),
+    "Pace: 11% in reserve · Lasts until reset")
+assert.equal(catalog.slotPace({}, "primary"), null)
+assert.equal(catalog.slotPace({ pace: "broken" }, "primary"), null)
+assert.equal(catalog.slotPace(null, "primary"), null)
 
 // objects cross the vm boundary with a foreign prototype; compare plain copies
 function plain(value) { return JSON.parse(JSON.stringify(value)) }
@@ -183,6 +220,119 @@ assert.equal(catalog.panelWindow(weeklyOnly, "codex", "session").remaining, 70)
 assert.equal(catalog.panelWindow({ primary: { usedPercent: 10, windowMinutes: 300 } }, "codex", "weekly").remaining, 90)
 assert.equal(catalog.panelWindow({}, "codex", "lowest"), null)
 assert.equal(catalog.panelWindow(null, "codex", "session"), null)
+
+// Only a finite usedPercent is a reading; null, NaN or a string are none.
+for (const usedPercent of [null, NaN, Infinity, "40", undefined]) {
+    assert.equal(catalog.windowUsageKnown({ usedPercent }), false, String(usedPercent))
+    assert.equal(catalog.windowRemainingText({ usedPercent }), "–")
+    assert.equal(catalog.panelWindow({ primary: { usedPercent, windowMinutes: 300 } }, "codex", "session"), null)
+}
+assert.equal(catalog.windowUsageKnown({ usedPercent: 0 }), true)
+assert.equal(catalog.windowUsageKnown(null), false)
+
+// "lowest" weighs a monthly window in any slot; other sources do not.
+const monthly = {
+    primary: { usedPercent: 20, windowMinutes: 300 },
+    secondary: { usedPercent: 30, windowMinutes: 10080 },
+    tertiary: { usedPercent: 95, windowMinutes: 43200 },
+}
+assert.equal(catalog.panelWindow(monthly, "codex", "lowest").remaining, 5)
+assert.equal(catalog.panelWindow(monthly, "codex", "session").remaining, 80)
+assert.equal(catalog.panelWindow(monthly, "codex", "weekly").remaining, 70)
+// a tertiary window that is not monthly, or not known, stays out
+assert.equal(catalog.panelWindow(Object.assign({}, monthly,
+    { tertiary: { usedPercent: 95, windowMinutes: 10080 } }), "claude", "lowest").remaining, 70)
+assert.equal(catalog.panelWindow(Object.assign({}, monthly,
+    { tertiary: { usedPercent: null, windowMinutes: 43200 } }), "codex", "lowest").remaining, 70)
+
+// The merged meter is stale when a value it shows comes from a stale
+// provider, and without any value when every provider is.
+{
+    const picks = {
+        codex: { session: { remaining: 40 }, weekly: { remaining: 90 } },
+        claude: { session: { remaining: 70 }, weekly: { remaining: 10 } },
+        gemini: { session: { remaining: 95 }, weekly: { remaining: 95 } },
+    }
+    const pickOf = (p, source) => (picks[p] || {})[source] || null
+    const staleOf = (stale) => (p) => stale.includes(p)
+    const providers = ["codex", "claude", "gemini"]
+    const sources = ["session", "weekly"]
+    // Gemini shows nothing, so its staleness does not matter
+    assert.equal(catalog.mergedStale(providers, sources, pickOf, staleOf(["gemini"])), false)
+    // Claude's weekly value is shown: its staleness does
+    assert.equal(catalog.mergedStale(providers, sources, pickOf, staleOf(["claude"])), true)
+    assert.equal(catalog.mergedStale(providers, sources, pickOf, staleOf(["codex"])), true)
+    // the percentage's source counts as well
+    picks.gemini.lowest = { remaining: 1 }
+    assert.equal(catalog.mergedStale(providers, sources.concat(["lowest"]), pickOf, staleOf(["gemini"])), true)
+    // no value: stale only when every provider is
+    const none = () => null
+    assert.equal(catalog.mergedStale(providers, sources, none, staleOf(["codex", "claude"])), false)
+    assert.equal(catalog.mergedStale(providers, sources, none, staleOf(providers)), true)
+    assert.equal(catalog.mergedStale([], sources, none, staleOf([])), true)
+}
+
+// Balances in usage.providerCost (#58), named as upstream's cost
+// presentation names them; a zero balance is listed, a missing one is not.
+{
+    const usd = (fields) => Object.assign({ used: 0, limit: 0, currencyCode: "USD" }, fields)
+    assert.deepEqual(plain(catalog.costBalances("claude", usd({ used: 3.2, limit: 50, balance: 14.46 }))),
+        [{ label: "Extra usage balance", amount: 14.46, currencyCode: "USD" }])
+    assert.deepEqual(plain(catalog.costBalances("claude", usd({ balance: 0 }))),
+        [{ label: "Extra usage balance", amount: 0, currencyCode: "USD" }])
+    assert.deepEqual(plain(catalog.costBalances("claude", usd({}))), [])
+    assert.deepEqual(plain(catalog.costBalances("claude", usd({ balance: null }))), [])
+    // Codex lists its balance in credits only
+    assert.deepEqual(plain(catalog.costBalances("codex", { used: 0, limit: 0, currencyCode: "Credits", balance: 1200 })),
+        [{ label: "Extra usage balance", amount: 1200, currencyCode: "Credits" }])
+    assert.deepEqual(plain(catalog.costBalances("codex", usd({ balance: 5 }))), [])
+    // Devin and LiteLLM carry the amount in `used`
+    assert.deepEqual(plain(catalog.costBalances("devin", usd({ used: 7.5, period: "Extra usage balance" }))),
+        [{ label: "Extra usage", amount: 7.5, currencyCode: "USD" }])
+    assert.deepEqual(plain(catalog.costBalances("devin", usd({ used: 7.5, limit: 20, period: "Monthly" }))), [])
+    assert.deepEqual(plain(catalog.costBalances("litellm", usd({ used: 12, period: "This month" }))),
+        [{ label: "This month", amount: 12, currencyCode: "USD" }])
+    assert.deepEqual(plain(catalog.costBalances("litellm", usd({ used: 12, limit: 0 }))),
+        [{ label: "Spend", amount: 12, currencyCode: "USD" }])
+    assert.deepEqual(plain(catalog.costBalances("litellm", usd({ used: 12, limit: 100 }))), [])
+    // any other provider, such as Grok's purchased credits (CodexBar 0.72)
+    assert.deepEqual(plain(catalog.costBalances("grok", usd({ balance: 14.46 }))),
+        [{ label: "Balance", amount: 14.46, currencyCode: "USD" }])
+    assert.deepEqual(plain(catalog.costBalances("grok", null)), [])
+
+    // the generic used/limit line stays away from balance-only snapshots
+    assert.equal(catalog.showsCostFallback("claude", usd({ used: 3.2, limit: 50, balance: 14.46 })), true)
+    assert.equal(catalog.showsCostFallback("claude", usd({ balance: 14.46 })), false)
+    assert.equal(catalog.showsCostFallback("grok", usd({ balance: 0 })), false)
+    assert.equal(catalog.showsCostFallback("codex", { used: 0, limit: 0, currencyCode: "Credits" }), false)
+    assert.equal(catalog.showsCostFallback("codex", { used: 10, limit: 0, currencyCode: "Quota" }), true)
+    assert.equal(catalog.showsCostFallback("devin", usd({ used: 7.5, period: "Extra usage balance" })), false)
+    assert.equal(catalog.showsCostFallback("litellm", usd({ used: 12 })), false)
+    assert.equal(catalog.showsCostFallback("litellm", usd({ used: 12, limit: 100 })), true)
+    assert.equal(catalog.showsCostFallback("cursor", null), false)
+
+    assert.equal(catalog.amountText(14.46, "USD"), "$ 14.46")
+    assert.equal(catalog.amountText(-0.5, undefined), "$ -0.50")
+    assert.equal(catalog.amountText(1200, "Credits"), "1200.00 Credits")
+    assert.equal(catalog.amountText(NaN, "USD"), "")
+}
+
+// The windows notifications watch: the card's windows with a reading.
+assert.deepEqual(plain(catalog.notificationWindows(scoped, "claude")), [
+    { key: "primary", label: "Session", remaining: 88, resetsAt: "" },
+    { key: "secondary", label: "Weekly", remaining: 60, resetsAt: "" },
+    { key: "extra:claude-weekly-scoped-fable", label: "Fable only", remaining: 12, resetsAt: "" },
+])
+assert.deepEqual(plain(catalog.notificationWindows(
+    { primary: { usedPercent: 30, windowMinutes: 300, resetsAt: "2026-10-06T15:00:00Z" } }, "codex")),
+    [{ key: "primary", label: "Session", remaining: 70, resetsAt: "2026-10-06T15:00:00Z" }])
+// Antigravity's quota summary replaces its family slots, as on the card
+assert.deepEqual(plain(catalog.notificationWindows(antigravity, "antigravity").map((w) => w.key)), [
+    "extra:antigravity-quota-summary-gemini-5h",
+    "extra:antigravity-quota-summary-gemini-weekly",
+    "extra:antigravity-quota-summary-3p-5h",
+])
+assert.deepEqual(plain(catalog.notificationWindows(null, "codex")), [])
 
 // Reset countdown (#30): the window behind the panel percentage
 const countdownNow = Date.parse("2026-09-30T12:00:00Z")

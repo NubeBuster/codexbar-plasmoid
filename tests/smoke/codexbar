@@ -3,12 +3,17 @@
 # payloads in $CODEXBAR_FIXTURES with reset times relative to now, and keeps
 # the enabled providers of its config.json in $CODEXBAR_MOCK_STATE (one
 # CodexBar id per line; missing means only the default-enabled Codex, and
-# "broken" a config.json the CLI cannot decode). Fetching the provider named
-# in $CODEXBAR_MOCK_CRASH crashes with SIGSEGV. With $CODEXBAR_MOCK_READONLY
+# "broken" a config.json the CLI cannot decode). The sources config.json
+# stores are in $CODEXBAR_MOCK_STATE.sources ("id source" lines; missing means
+# Claude's OAuth only), and every call's arguments are appended to
+# $CODEXBAR_MOCK_STATE.calls. Fetching the provider named in
+# $CODEXBAR_MOCK_CRASH crashes with SIGSEGV. With $CODEXBAR_MOCK_READONLY
 # set, config.json cannot be written.
 fixtures="${CODEXBAR_FIXTURES:?CODEXBAR_FIXTURES is not set}"
 state="${CODEXBAR_MOCK_STATE:?CODEXBAR_MOCK_STATE is not set}"
+sources="$state.sources"
 providers="$fixtures/providers.txt"
+printf '%s %s\n' "$(date +%s.%N)" "$*" >>"$state.calls"
 decode_error="Failed to decode CodexBar config: The data isn't in the correct format."
 
 # Like CodexBar 0.70 with a config.json it cannot decode, every command but
@@ -32,6 +37,7 @@ iso() { date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ; }
 
 serve() {
     sed -e "s/@NOW@/$(iso now)/g" \
+        -e "s/@TODAY@/$(date -u +%Y-%m-%d)/g" \
         -e "s/@IN_1H@/$(iso '+1 hour')/g" \
         -e "s/@IN_2H10M@/$(iso '+2 hours 10 minutes')/g" \
         -e "s/@IN_3H50M@/$(iso '+3 hours 50 minutes')/g" \
@@ -45,6 +51,10 @@ serve() {
 
 enabled_ids() {
     if [ -f "$state" ]; then cat "$state"; else echo codex; fi
+}
+
+stored_sources() {
+    if [ -f "$sources" ]; then cat "$sources"; else echo "claude oauth"; fi
 }
 
 # CodexBar id for a --provider name or id, empty when unknown.
@@ -62,10 +72,36 @@ config_command() {
                 END { print "]" }' - "$providers"
             ;;
         dump)
-            enabled_ids | awk 'NR == FNR { on[$1] = 1; next }
-                { printf "%s{\"id\":\"%s\",\"enabled\":%s%s}", (n++ ? "," : "{\"providers\":["), $1,
-                      ($1 in on) ? "true" : "false", ($1 == "claude") ? ",\"source\":\"oauth\"" : "" }
-                END { print "]}" }' - "$providers"
+            { enabled_ids | sed 's/^/on /'; stored_sources | sed 's/^/source /'; } \
+                | awk 'NR == FNR { if ($1 == "on") on[$2] = 1; else src[$2] = $3; next }
+                    { printf "%s{\"id\":\"%s\",\"enabled\":%s%s}", (n++ ? "," : "{\"providers\":["), $1,
+                          ($1 in on) ? "true" : "false", ($1 in src) ? ",\"source\":\"" src[$1] "\"" : "" }
+                    END { print "]}" }' - "$providers"
+            ;;
+        set-source)
+            if [ -n "${CODEXBAR_MOCK_READONLY:-}" ]; then
+                echo '[{"provider":"cli","source":"cli","error":{"kind":"config","code":1,"message":"Permission denied"}}]'
+                exit 1
+            fi
+            id="$(provider_id "$3")"
+            if [ -z "$id" ]; then
+                echo '[{"provider":"cli","error":{"code":1,"message":"Unknown or missing provider. Use --provider <name>."}}]'
+                exit 1
+            fi
+            case "$5" in
+                auto | web | cli | oauth | api) ;;
+                *)
+                    echo '[{"provider":"cli","error":{"code":1,"message":"Unknown or missing source. Use --source auto|web|cli|oauth|api."}}]'
+                    exit 1
+                    ;;
+            esac
+            others="$(stored_sources | awk -v id="$id" '$1 != id')"
+            if [ "$5" = auto ]; then
+                printf '%s\n' "$others" | sed '/^$/d' >"$sources"
+            else
+                printf '%s\n%s %s\n' "$others" "$id" "$5" | sed '/^$/d' >"$sources"
+            fi
+            echo "{\"provider\":\"$id\",\"source\":\"$5\"}"
             ;;
         enable | disable)
             if [ -n "${CODEXBAR_MOCK_READONLY:-}" ]; then
@@ -120,7 +156,18 @@ case "${1:-}" in
         config_command "$@"
         ;;
     cost)
-        echo "[]"
+        provider=""
+        while [ $# -gt 0 ]; do
+            if [ "$1" = "--provider" ]; then
+                provider="$2"
+            fi
+            shift
+        done
+        if [ -f "$fixtures/cost-$provider.json" ]; then
+            serve "cost-$provider.json"
+        else
+            echo "[]"
+        fi
         ;;
     *)
         echo "mock codexbar: unsupported command: $*" >&2

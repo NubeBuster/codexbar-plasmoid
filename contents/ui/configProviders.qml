@@ -30,6 +30,15 @@ KCM.SimpleKCM {
     property bool showEnabledOnly: false
     // The enabled providers the ticks on this page started from.
     property var baseEnabled: []
+    // The sources the source column started from.
+    property string baseSources
+    // Read live, not as a cfg_ key: whether config.json holds the sources
+    // (CodexBar CLI 0.73.0 or newer), so the column writes them there.
+    readonly property bool storesSources: Plasmoid.configuration.configStoresSources
+
+    // Providers with at least one override, in list order (enabled or not).
+    readonly property var overriddenIds: ProviderOverrides.overriddenProviders(
+        cfg_providerOverrides, providerIds())
 
     readonly property var sourceLabels: [
         i18n("Auto"), i18n("Web"), i18n("CLI"), i18n("OAuth"), i18n("API")
@@ -65,12 +74,14 @@ KCM.SimpleKCM {
         return Catalog.PROVIDERS[id] === undefined && entry ? entry.name : Catalog.meta(id).name
     }
 
-    // Source choices for one provider. With config.json the first choice is
-    // the source stored there; the others override it for the widget's probes.
+    // Source choices for one provider. When config.json holds the sources,
+    // the column shows and sets the one stored there. With an older CLI the
+    // first choice is the stored source and the others override it for the
+    // widget's probes.
     function sourceModel(id) {
         var labels = page.sourceLabels.slice()
         var entry = configEntry(id)
-        if (entry) {
+        if (entry && !page.storesSources) {
             var index = ProviderSources.SOURCES.indexOf(entry.source)
             labels[0] = i18n("Config: %1", index >= 0 ? page.sourceLabels[index] : entry.source)
         }
@@ -97,13 +108,17 @@ KCM.SimpleKCM {
         cfg_enabledProviders = list.join(",")
     }
 
-    Component.onCompleted: baseEnabled = enabledList()
+    Component.onCompleted: {
+        baseEnabled = enabledList()
+        baseSources = cfg_providerSources
+    }
 
     // The dialog writes every cfg_ key of this page on Apply and on OK, even
     // unchanged ones, so the page follows what the widget copies from
     // config.json while it is open: a change made with the CLI or the app,
     // or config.json as read back after Apply. Providers ticked or unticked
-    // here keep that state; the others take config.json's.
+    // here keep that state, and so do sources changed here; the others take
+    // config.json's.
     Connections {
         target: Plasmoid.configuration
 
@@ -114,9 +129,40 @@ KCM.SimpleKCM {
             page.baseEnabled = current
         }
 
+        function onProviderSourcesChanged() {
+            var current = Plasmoid.configuration.providerSources
+            page.cfg_providerSources = ProviderSources.rebase(
+                page.baseSources, page.cfg_providerSources, current)
+            page.baseSources = current
+        }
+
         function onConfigProvidersChanged() {
             page.cfg_configProviders = Plasmoid.configuration.configProviders
         }
+    }
+
+    // Ask before dropping overrides: one provider's, or everyone's for "".
+    function confirmReset(id) {
+        resetDialog.providerId = id
+        resetDialog.open()
+    }
+
+    // Staged like every other edit; the page Apply/OK commits it.
+    function applyConfirmedReset() {
+        page.cfg_providerOverrides = resetDialog.providerId === ""
+            ? ProviderOverrides.serialize({})
+            : ProviderOverrides.resetProvider(page.cfg_providerOverrides, resetDialog.providerId)
+        resetDialog.close()
+    }
+
+    function overriddenProviderLines() {
+        var enabled = page.enabledList()
+        return page.overriddenIds.map(function (id) {
+            var name = page.providerName(id)
+            return enabled.indexOf(id) >= 0
+                ? "• " + name
+                : "• " + i18n("%1 (not enabled)", name)
+        }).join("\n")
     }
 
     ColumnLayout {
@@ -134,11 +180,29 @@ KCM.SimpleKCM {
 
         QQC2.Label {
             Layout.fillWidth: true
-            text: page.configList
+            text: page.configList && page.storesSources
+                ? i18n("Providers, whether they are enabled and their data source come from CodexBar's config.json, which the CodexBar CLI and app share; Apply writes your changes there with codexbar config enable/disable/set-source. Each enabled provider costs a probe per refresh. The gear button opens per-provider overrides for the panel settings; anything left unticked there follows the General page.")
+                : page.configList
                 ? i18n("Providers and whether they are enabled come from CodexBar's config.json, which the CodexBar CLI and app share; Apply writes your changes there with codexbar config enable/disable. Each enabled provider costs a probe per refresh. The source column shows the source stored in config.json; any other choice overrides it for this widget only (--source). The gear button opens per-provider overrides for the panel settings; anything left unticked there follows the General page.")
                 : i18n("Providers are probed with the codexbar CLI. Only enable providers you actually use — each one costs a probe per refresh. The source column picks the CodexBar data source (--source) for a provider; Auto lets the CLI decide. The gear button opens per-provider overrides for the panel settings; anything left unticked there follows the General page.")
             wrapMode: Text.WordWrap
             opacity: 0.7
+        }
+
+        Kirigami.InlineMessage {
+            Layout.fillWidth: true
+            visible: page.overriddenIds.length > 0
+            type: Kirigami.MessageType.Information
+            text: i18np("Custom panel settings are active for %1 provider.",
+                        "Custom panel settings are active for %1 providers.",
+                        page.overriddenIds.length)
+            actions: [
+                Kirigami.Action {
+                    text: i18n("Reset All…")
+                    icon.name: "edit-reset"
+                    onTriggered: page.confirmReset("")
+                }
+            ]
         }
 
         RowLayout {
@@ -229,6 +293,28 @@ KCM.SimpleKCM {
                     onClicked: settingsDialog.openFor(row.modelData, page.providerName(row.modelData))
                 }
 
+                // A disabled button gets no hover events, so the wrapper's
+                // HoverHandler drives the tooltip in both states.
+                Item {
+                    implicitWidth: resetButton.implicitWidth
+                    implicitHeight: resetButton.implicitHeight
+
+                    HoverHandler { id: resetHover }
+
+                    QQC2.ToolButton {
+                        id: resetButton
+                        anchors.fill: parent
+                        // Works for disabled providers too, whose gear is greyed out.
+                        enabled: page.overriddenIds.indexOf(row.modelData) >= 0
+                        icon.name: "edit-reset"
+                        Accessible.name: i18n("Reset %1 to global defaults", page.providerName(row.modelData))
+                        QQC2.ToolTip.text: enabled
+                            ? i18n("Reset %1 to global defaults", page.providerName(row.modelData))
+                            : i18n("%1 has no custom panel settings to reset", page.providerName(row.modelData))
+                        QQC2.ToolTip.visible: resetHover.hovered
+                        onClicked: page.confirmReset(row.modelData)
+                    }
+                }
             }
         }
 
@@ -270,5 +356,71 @@ KCM.SimpleKCM {
         })
         // Staged like every other edit; the page Apply/OK commits it.
         onStaged: function (overrides) { page.cfg_providerOverrides = overrides }
+    }
+
+    QQC2.Dialog {
+        id: resetDialog
+        // Provider to reset, or "" for every provider.
+        property string providerId: ""
+        readonly property bool resetsAll: providerId === ""
+        modal: true
+        // Center on the window rather than on the scrolled provider list.
+        parent: QQC2.Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(page.width - Kirigami.Units.gridUnit * 2, Kirigami.Units.gridUnit * 24)
+        title: resetsAll
+            ? i18n("Reset all provider overrides?")
+            : i18n("Reset %1 to global defaults?", page.providerName(providerId))
+
+        contentItem: ColumnLayout {
+            spacing: Kirigami.Units.smallSpacing
+
+            QQC2.Label {
+                Layout.fillWidth: true
+                text: resetDialog.resetsAll
+                    ? i18np("This provider will go back to using the General settings:",
+                            "These providers will go back to using the General settings:",
+                            page.overriddenIds.length)
+                    : i18n("%1's custom panel settings will be removed and it will follow the General settings again.",
+                           page.providerName(resetDialog.providerId))
+                wrapMode: Text.WordWrap
+            }
+
+            QQC2.Label {
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.largeSpacing
+                visible: resetDialog.resetsAll
+                text: page.overriddenProviderLines()
+                wrapMode: Text.WordWrap
+            }
+
+            QQC2.Label {
+                Layout.fillWidth: true
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                text: i18n("Nothing changes until you click Apply or OK.")
+                wrapMode: Text.WordWrap
+                opacity: 0.7
+                font: Kirigami.Theme.smallFont
+            }
+        }
+
+        footer: QQC2.DialogButtonBox {
+            QQC2.Button {
+                text: resetDialog.resetsAll ? i18n("Reset All") : i18n("Reset")
+                icon.name: "edit-reset"
+                QQC2.DialogButtonBox.buttonRole: QQC2.DialogButtonBox.AcceptRole
+                onClicked: page.applyConfirmedReset()
+            }
+            QQC2.Button {
+                id: resetCancel
+                text: i18n("Cancel")
+                icon.name: "dialog-cancel"
+                QQC2.DialogButtonBox.buttonRole: QQC2.DialogButtonBox.RejectRole
+                onClicked: resetDialog.close()
+            }
+        }
+
+        // Default to the safe choice.
+        onOpened: resetCancel.forceActiveFocus()
     }
 }

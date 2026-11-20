@@ -26,40 +26,31 @@ xvfb_pid=$!
 trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
 sleep 2
 
-# package NAME KEY=VALUE... prints the path of a copy of the widget whose
-# config defaults are replaced, so every scenario starts from a known state.
-package() {
-    local dir="$work/pkg-$1"
-    shift
-    mkdir -p "$dir"
-    cp -r "$repo/metadata.json" "$repo/contents" "$dir/"
-    local xml="$dir/contents/config/main.xml" pair key value
-    for pair in "$@"; do
-        key="${pair%%=*}"
-        value="${pair#*=}"
-        awk -v key="$key" -v value="$value" '
-            index($0, "<entry name=\"" key "\"") { hit = 1 }
-            hit && /<default>/ { sub(/<default>.*<\/default>/, "<default>" value "</default>"); hit = 0 }
-            { print }
-        ' "$xml" > "$xml.new"
-        mv "$xml.new" "$xml"
-        grep -q -F "<default>$value</default>" "$xml" || {
-            echo "unknown setting: $key" >&2
-            return 1
-        }
-    done
-    echo "$dir"
-}
+source "$repo/tests/smoke/helpers.sh"
 
 failed=0
 
-# expect_config ID... checks that the mock config.json enables exactly these.
-expect_config() {
+# expect_extent NAME height|width MIN MAX CROP checks how tall (horizontal
+# panel) or wide (vertical panel) the widget draws in a panel scenario: the
+# non-black pixels inside CROP, which leaves out plasmoidviewer's toolbar.
+# #47 grew the panel icons from 32 to about 100 px and the job stayed green.
+expect_extent() {
+    local name="$1" axis="$2" min="$3" max="$4" crop="$5" geometry size
+    geometry="$(magick "$out/$name.png" -crop "$crop" +repage -fuzz 3% -trim -format '%wx%h' info: 2>/dev/null || true)"
+    if [[ "$axis" == height ]]; then size="${geometry#*x}"; else size="${geometry%x*}"; fi
+    if [[ ! "$size" =~ ^[0-9]+$ ]] || (( size < min || size > max )); then
+        echo "$name: the widget draws ${geometry:-nothing}, expected a $axis of $min to $max px" >&2
+        failed=1
+    fi
+}
+
+# expect_sources "ID SOURCE"... checks the sources the mock config.json stores.
+expect_sources() {
     local want have
-    want="$(printf '%s\n' "$@" | sort | tr '\n' ' ')"
-    have="$({ cat "$CODEXBAR_MOCK_STATE" 2> /dev/null || echo codex; } | sort | tr '\n' ' ')"
-    if [[ $want != "$have" ]]; then
-        echo "config.json enables [$have], expected [$want]" >&2
+    want="$(printf '%s\n' "$@" | sort | tr '\n' ';')"
+    have="$({ cat "$CODEXBAR_MOCK_STATE.sources" 2>/dev/null || echo "claude oauth"; } | sort | tr '\n' ';')"
+    if [[ "$want" != "$have" ]]; then
+        echo "config.json stores the sources [$have], expected [$want]" >&2
         failed=1
     fi
 }
@@ -77,9 +68,9 @@ shoot() {
 render() {
     local name="$1" pkg="$2" size="$3"
     shift 3
-    rm -f "$CODEXBAR_MOCK_STATE"
-    if [[ -n ${config_state:-} ]]; then
-        tr ' ' '\n' <<< "$config_state" > "$CODEXBAR_MOCK_STATE"
+    rm -f "$CODEXBAR_MOCK_STATE" "$CODEXBAR_MOCK_STATE.calls"
+    if [[ -n "${config_state:-}" ]]; then
+        tr ' ' '\n' <<<"$config_state" >"$CODEXBAR_MOCK_STATE"
     fi
     plasmoidviewer -a "$pkg" -s "$size" "$@" > "$out/$name.log" 2>&1 &
     local pid=$!
@@ -93,14 +84,24 @@ three="enabledProviders=codex,claude,antigravity"
 panel=(-c org.kde.panel -f horizontal -l topedge)
 render panel-meters "$(package meters "$three" showPercentInPanel=true panelPercentSource=lowest)" \
     640x140 "${panel[@]}"
+expect_extent panel-meters height 16 40 640x88+0+0
+# Nothing is probed before the CLI check, whose answer would be dropped.
+cp "$CODEXBAR_MOCK_STATE.calls" "$out/panel-meters.calls.txt"
+if [[ "$(head -n 1 "$CODEXBAR_MOCK_STATE.calls" | cut -d ' ' -f 2-)" != "--version" ]]; then
+    echo "The widget called the CLI before checking it: $(head -n 1 "$CODEXBAR_MOCK_STATE.calls")" >&2
+    failed=1
+fi
 # The widget's own list moved to config.json on first start (#25).
 expect_config codex claude antigravity
 render panel-logos "$(package logos "$three" panelDisplayMode=logos showPercentInPanel=true)" \
     640x140 "${panel[@]}"
+expect_extent panel-logos height 16 40 640x88+0+0
 render panel-override "$(package override "$three" showPercentInPanel=true \
     'providerOverrides={"claude":{"panelDisplayMode":"logos"}}')" 640x140 "${panel[@]}"
+expect_extent panel-override height 16 40 640x88+0+0
 render panel-countdown "$(package countdown "$three" panelDisplayMode=logos showPercentInPanel=true \
     showResetCountdown=true)" 640x140 "${panel[@]}"
+expect_extent panel-countdown height 16 40 640x88+0+0
 # Pace text per window ("used%/elapsed%(ttl)", coloured by pace); a minimum
 # of 100% hides every window, so all providers are quiet and stay as icons.
 render panel-pace "$(package pace "$three" panelDisplayMode=logos showPercentInPanel=true \
@@ -109,6 +110,7 @@ render panel-pace-quiet "$(package pace-quiet "$three" panelDisplayMode=logos sh
     panelPaceText=true panelMinUsedPercent=100)" 640x140 "${panel[@]}"
 render panel-vertical "$(package vertical "$three" showPercentInPanel=true showResetCountdown=true \
     separateIcons=true)" 160x520 -c org.kde.panel -f vertical -l leftedge
+expect_extent panel-vertical width 40 120 160x460+0+0
 render popup "$(package popup "$three")" 560x860 -f planar
 render popup-used "$(package popup-used "$three" usageBarsShowUsed=true)" 560x860 -f planar
 # A provider only config.json knows, such as a user plugin, still shows up.
@@ -123,6 +125,8 @@ expect_config claude myplugin
 config_state="antigravity" CODEXBAR_MOCK_CRASH=antigravity render popup-crash \
     "$(package crash enabledProviders=antigravity)" 560x860 -f planar
 expect_config antigravity
+# A prepaid balance in usage.providerCost shows on the provider's card (#58).
+config_state="claude" render popup-balance "$(package balance enabledProviders=claude)" 560x860 -f planar
 # A config.json the CLI cannot write: the migration fails, the widget keeps
 # its own list, and the popup shows the CLI's error.
 CODEXBAR_MOCK_READONLY=1 render popup-readonly "$(package readonly "$three")" 560x860 -f planar
@@ -131,6 +135,7 @@ expect_config codex
 export CODEXBAR_MOCK_VERSION=0.65.0
 render panel-legacy "$(package legacy "$three" panelDisplayMode=logos showPercentInPanel=true)" \
     640x140 "${panel[@]}"
+expect_extent panel-legacy height 16 40 640x88+0+0
 unset CODEXBAR_MOCK_VERSION
 expect_config codex
 
@@ -177,27 +182,42 @@ kill "$clicks_pid" 2> /dev/null || true
 wait "$clicks_pid" 2> /dev/null || true
 
 # "About CodexBar" at the bottom of the popup opens the About page, which
-# shows the version from metadata.json.
+# shows the version from metadata.json. The popup opens on the Codex card, so
+# this click and the "Settings…" clicks below move with that card's height
+# (two rate windows, each with a pace line, in the fixture).
 rm -f "$CODEXBAR_MOCK_STATE"
 plasmoidviewer -a "$(package about "$three")" -s 560x860 -f planar > "$out/popup-about.log" 2>&1 &
 about_pid=$!
 sleep "${SMOKE_WAIT:-15}"
-xdotool mousemove 248 726 click 1
+# The pointer rests outside the popup, so hover cannot change the frames.
+xdotool mousemove 559 859
+sleep 1
+import -window root "$out/popup-about.before.png"
+xdotool mousemove 72 506 click 1 mousemove 559 859
 sleep 3
 shoot popup-about 560x860
-kill "$about_pid" 2> /dev/null || true
-wait "$about_pid" 2> /dev/null || true
+if magick compare -metric AE "$out/popup-about.before.png" "$out/popup-about.screen.png" null: 2>/dev/null; then
+    echo "About CodexBar did not open the About page" >&2
+    failed=1
+fi
+# A click that lands on "Settings…" instead also changes the screen.
+if xdotool search --name 'CodexBar Settings' >/dev/null 2>&1; then
+    echo "The About click opened the settings window" >&2
+    failed=1
+fi
+kill "$about_pid" 2>/dev/null || true
+wait "$about_pid" 2>/dev/null || true
 
 # The settings window: the General and Providers pages, and the override
 # dialog of Claude, whose seeded override gives it a ticked row.
 rm -f "$CODEXBAR_MOCK_STATE"
-plasmoidviewer -a "$(package settings "$three" \
+plasmoidviewer -a "$(package settings "$three" notifyQuota=true notifyStatus=true \
     'providerOverrides={"claude":{"panelDisplayMode":"logos"}}')" -s 560x860 -f planar \
     > "$out/settings.log" 2>&1 &
 settings_pid=$!
 sleep "${SMOKE_WAIT:-15}"
 # "Settings…" at the bottom of the popup opens the configuration window.
-xdotool mousemove 230 694 click 1
+xdotool mousemove 60 474 click 1
 sleep 5
 settings_window="$(xdotool search --name 'CodexBar Settings' | head -n 1)"
 if [[ -z $settings_window ]]; then
@@ -211,10 +231,16 @@ else
     xdotool mousemove 63 100 click 1
     sleep 3
     import -window "$settings_window" "$out/settings-providers.png"
-    # Claude's gear button (second row) opens its override dialog.
-    xdotool mousemove 980 204 click 1
+    # Claude's gear button (second row) opens its override dialog. The
+    # seeded override adds the "Reset All…" info bar above the list, and
+    # the reset button sits right of the gear.
+    xdotool mousemove 943 250 click 1
     sleep 3
     import -window "$settings_window" "$out/settings-overrides.png"
+    if cmp -s "$out/settings-providers.png" "$out/settings-overrides.png"; then
+        echo "Claude's gear button did not open the override dialog" >&2
+        failed=1
+    fi
 fi
 xwininfo -root -tree > "$out/settings.windows.txt" 2>&1 || true
 kill "$settings_pid" 2> /dev/null || true
@@ -228,7 +254,7 @@ plasmoidviewer -a "$(package external "$three" refreshIntervalMinutes=1)" -s 560
     > "$out/settings-external.log" 2>&1 &
 external_pid=$!
 sleep "${SMOKE_WAIT:-15}"
-xdotool mousemove 230 694 click 1
+xdotool mousemove 60 474 click 1
 sleep 5
 external_window="$(xdotool search --name 'CodexBar Settings' | head -n 1)"
 if [[ -z $external_window ]]; then
@@ -249,6 +275,44 @@ else
 fi
 kill "$external_pid" 2> /dev/null || true
 wait "$external_pid" 2> /dev/null || true
+
+# With CLI 0.73.0 config.json holds the data sources: the widget's own
+# --source choices move there once, for providers without a stored source
+# (Codex) while a stored one wins (Claude's OAuth), and probes pass no
+# --source. The Providers page shows the stored sources, and OK, which writes
+# every key of the page, leaves config.json as it is.
+rm -f "$CODEXBAR_MOCK_STATE" "$CODEXBAR_MOCK_STATE.sources" "$CODEXBAR_MOCK_STATE.calls"
+CODEXBAR_MOCK_VERSION=0.73.0 plasmoidviewer \
+    -a "$(package sources "$three" providerSources=claude=cli,codex=api)" -s 560x860 -f planar \
+    >"$out/settings-sources.log" 2>&1 &
+sources_pid=$!
+sleep "${SMOKE_WAIT:-15}"
+expect_sources "claude oauth" "codex api"
+cp "$CODEXBAR_MOCK_STATE.calls" "$out/settings-sources.calls.txt"
+if grep -q -E ' usage .*--source' "$CODEXBAR_MOCK_STATE.calls"; then
+    echo "Probes still pass --source with the sources in config.json" >&2
+    failed=1
+fi
+xdotool mousemove 60 474 click 1
+sleep 5
+sources_window="$(xdotool search --name 'CodexBar Settings' | head -n 1)"
+if [[ -z "$sources_window" ]]; then
+    echo "The settings window did not open" >&2
+    failed=1
+else
+    xdotool windowsize "$sources_window" 1000 890
+    sleep 2
+    xdotool mousemove 63 100 click 1
+    sleep 3
+    import -window "$sources_window" "$out/settings-sources.png"
+    xdotool mousemove 784 869 click 1
+    sleep 5
+    expect_config codex claude antigravity
+    expect_sources "claude oauth" "codex api"
+fi
+kill "$sources_pid" 2>/dev/null || true
+wait "$sources_pid" 2>/dev/null || true
+rm -f "$CODEXBAR_MOCK_STATE.sources" "$CODEXBAR_MOCK_STATE.calls"
 
 # QML runtime errors from the widget's own files fail the test, and so does
 # an applet or containment that could not be loaded at all.

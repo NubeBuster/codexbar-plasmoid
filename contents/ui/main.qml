@@ -4,11 +4,14 @@ import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.plasma5support as P5Support
 import org.kde.kirigami as Kirigami
+import org.kde.notification
 import "code/catalog.js" as Catalog
 import "code/claudeAccounts.js" as ClaudeAccounts
 import "code/cliStatus.js" as CliStatus
 import "code/configProviders.js" as ConfigProviders
+import "code/notifications.js" as Notifications
 import "code/providerSources.js" as ProviderSources
+import "code/usageProbes.js" as UsageProbes
 
 PlasmoidItem {
     id: root
@@ -41,6 +44,9 @@ PlasmoidItem {
     property bool mirroringConfig: false
     // A failed one-time migration keeps this session on the widget's own list.
     property bool configMigrationFailed: false
+    // A failed one-time move of the widget's sources keeps this session on
+    // its --source overrides.
+    property bool sourceMigrationFailed: false
 
     // ---- data model ----
     // providerId -> { entry, entries, cost, costUpdatedAt, error, loading, fetchedAt }
@@ -87,6 +93,10 @@ PlasmoidItem {
     // per-provider request generation: responses from an older generation
     // (e.g. after a config change re-triggered a refresh) are discarded
     property var requestGen: ({})
+    // One usage probe per provider at a time (UsageProbes).
+    property var probes: UsageProbes.initialState()
+    // What the opt-in notifications last saw per provider (Notifications).
+    property var notificationState: ({})
 
     // Optional schema-v1 claude-swap-compatible adapter state. Normal Claude
     // usage/cost queries remain active for the panel, overview and fallback UI.
@@ -388,7 +398,7 @@ PlasmoidItem {
         if (!ts)
             return true
         var maxAge = Math.max(1, Plasmoid.configuration.refreshIntervalMinutes) * 60000 * 3
-        return (Date.now() - ts) > maxAge
+        return (nowMs - ts) > maxAge
     }
 
     function keyProviderIds() {
@@ -422,8 +432,28 @@ PlasmoidItem {
         probeAll(force)
     }
 
+    // config.json holds the providers' data sources: the CLI can store them
+    // (0.73.0 or newer) and the widget's own sources moved there. Then the
+    // Providers page writes them with `config set-source`, and probes pass no
+    // --source.
+    function storesSources() {
+        return configMode && CliStatus.supportsConfigSetSource(cliState.detectedVersion)
+            && Plasmoid.configuration.configSourcesMigrated
+    }
+
+    // The widget's own sources while they still have to move to config.json
+    // (ConfigProviders.read), else null.
+    function sourcesToMove() {
+        if (!CliStatus.supportsConfigSetSource(cliState.detectedVersion)
+                || Plasmoid.configuration.configSourcesMigrated || sourceMigrationFailed)
+            return null
+        return ProviderSources.parse(Plasmoid.configuration.providerSources)
+    }
+
     // Back to the widget's own provider list; true when that changed it.
     function leaveConfigMode() {
+        if (Plasmoid.configuration.configStoresSources)
+            Plasmoid.configuration.configStoresSources = false
         if (Plasmoid.configuration.configProviders !== "")
             Plasmoid.configuration.configProviders = ""
         if (configProviderList === null)
@@ -454,9 +484,11 @@ PlasmoidItem {
         executable.connectSource(command)
     }
 
-    // A selection applied on the settings page goes to config.json.
+    // A selection applied on the settings page goes to config.json, with its
+    // sources once config.json holds them.
     function applyProviderSelection(wanted) {
-        var request = ConfigProviders.request(configSync, configProviderList, wanted, true, false)
+        var sources = storesSources() ? ProviderSources.parse(Plasmoid.configuration.providerSources) : null
+        var request = ConfigProviders.request(configSync, configProviderList, wanted, true, false, sources)
         configSync = request.state
         if (request.write)
             writeConfig(request.write)
@@ -477,15 +509,24 @@ PlasmoidItem {
     }
 
     // The settings page shows config.json's state: enabledProviders mirrors
-    // it, and configProviders caches the full list with names and sources.
+    // it, so does providerSources once config.json holds the sources, and
+    // configProviders caches the full list with names and sources.
     function mirrorConfig(list) {
         var enabled = ConfigProviders.enabledIds(list).join(",")
         var cache = JSON.stringify(list)
+        var stores = storesSources()
         mirroringConfig = true
         if (Plasmoid.configuration.enabledProviders !== enabled)
             Plasmoid.configuration.enabledProviders = enabled
+        if (stores) {
+            var sources = ProviderSources.serialize(ConfigProviders.storedSources(list))
+            if (Plasmoid.configuration.providerSources !== sources)
+                Plasmoid.configuration.providerSources = sources
+        }
         if (Plasmoid.configuration.configProviders !== cache)
             Plasmoid.configuration.configProviders = cache
+        if (Plasmoid.configuration.configStoresSources !== stores)
+            Plasmoid.configuration.configStoresSources = stores
         mirroringConfig = false
     }
 
@@ -494,7 +535,7 @@ PlasmoidItem {
             for (var i = 0; i < enabledProviders.length; i++) {
                 var provider = enabledProviders[i]
                 if (force === true || !autoRefreshBlocked[provider])
-                    refreshProvider(provider)
+                    refreshProvider(provider, force === true)
             }
         }
         // The account adapter is a separate executable from the codexbar CLI,
@@ -563,22 +604,29 @@ PlasmoidItem {
         }
     }
 
-    function refreshProvider(p) {
+    // fresh: the answer must be fetched after this call (a forced refresh),
+    // so a probe that already runs does not count for it.
+    function refreshProvider(p, fresh) {
         if (!CliStatus.canRunUsage(cliState.code))
             return
         if (!usageData[p])
             usageData[p] = {}
-        var gen = (requestGen[p] || 0) + 1
-        requestGen[p] = gen
         usageData[p].loading = true
         bump()
 
         var cliGeneration = cliState.generation
-        var cmd = uniqueCliCommand(
-            cliCmd("usage --provider " + p + " --json"
-                   + ProviderSources.cliArguments(Plasmoid.configuration.providerSources, p)
-                   + (Plasmoid.configuration.showStatus ? " --status" : "")),
-            "usage-" + p, cliGeneration)
+        var command = cliCmd("usage --provider " + p + " --json"
+                             + (storesSources() ? "" : ProviderSources.cliArguments(Plasmoid.configuration.providerSources, p))
+                             + (Plasmoid.configuration.showStatus ? " --status" : ""))
+        // While a probe of p runs, this refresh shares its answer, or runs
+        // once it is done when it needs a newer one.
+        var probe = UsageProbes.request(probes, p, command, cliGeneration, fresh === true)
+        probes = probe.state
+        if (!probe.start)
+            return
+        var gen = (requestGen[p] || 0) + 1
+        requestGen[p] = gen
+        var cmd = uniqueCliCommand(command, "usage-" + p, cliGeneration)
         pendingUsage[cmd] = { p: p, gen: gen, cliGeneration: cliGeneration }
         executable.connectSource(cmd)
     }
@@ -642,7 +690,8 @@ PlasmoidItem {
             var list = ConfigProviders.parse(parts[0], parts.length > 1 ? parts[1] : "",
                                              Catalog.cliProviderId)
             var read = ConfigProviders.read(configSync, configReq.token, list,
-                                            Plasmoid.configuration.configMigrated, keyProviderIds())
+                                            Plasmoid.configuration.configMigrated, keyProviderIds(),
+                                            sourcesToMove())
             configSync = read.state
             var action = read.action
             if (action.type === "drop")
@@ -659,6 +708,8 @@ PlasmoidItem {
             configProviderList = list
             if (action.migrated)
                 Plasmoid.configuration.configMigrated = true
+            if (action.sourcesMigrated)
+                Plasmoid.configuration.configSourcesMigrated = true
             if (action.type === "write") {
                 writeConfig(action)
                 return
@@ -688,8 +739,14 @@ PlasmoidItem {
                     probeAll(abandoned.force)
                 return
             }
-            if (writeError !== "")
+            if (writeError !== "" && writeReq.write.sourceMigration) {
+                // Keep the widget's sources as --source for this session;
+                // the read-back shows what config.json has now.
+                console.warn("codexbar: moving the provider sources to config.json failed:", writeError)
+                sourceMigrationFailed = true
+            } else if (writeError !== "") {
                 console.warn("codexbar: config write failed:", writeError)
+            }
             loadConfig(ConfigProviders.readBack(configSync, writeReq.write))
             return
         }
@@ -748,7 +805,7 @@ PlasmoidItem {
             // Switching affects both the adapter projection and the ambient
             // Claude snapshot used by panel/overview/status/cost UI.
             if (enabledProviders.indexOf("claude") >= 0)
-                refreshProvider("claude")
+                refreshProvider("claude", true)
             refreshClaudeAccounts()
             return
         }
@@ -756,7 +813,18 @@ PlasmoidItem {
         var req = pendingUsage[source]
         if (req !== undefined) {
             delete pendingUsage[source]
-            if (requestGen[req.p] !== req.gen
+            var probe = UsageProbes.finish(probes, req.p, req.cliGeneration)
+            probes = probe.state
+            if (probe.rerun) {
+                // A refresh with another command waited for this probe; it
+                // shows loading again only if it can run.
+                if (usageData[req.p])
+                    usageData[req.p].loading = false
+                refreshProvider(req.p, true)
+                bump()
+                return
+            }
+            if (!probe.accept || requestGen[req.p] !== req.gen
                     || req.cliGeneration !== cliState.generation)
                 return // stale response from an older refresh
             var d = usageData[req.p]
@@ -804,6 +872,7 @@ PlasmoidItem {
                 cliState = CliStatus.applyUsageResult(
                     cliState, req.cliGeneration, exitCode, false, parseFailed)
             }
+            notifyChanges(req.p)
             bump()
             return
         }
@@ -831,6 +900,63 @@ PlasmoidItem {
         }
     }
 
+    // ---- notifications ----
+    // A provider's latest answer as the notification rules read it: failed
+    // without usage, with an error, or with more than one account.
+    function notificationRow(p) {
+        var d = usageData[p]
+        if (!d || d.error || !d.entry || !d.entry.usage || (d.entries && d.entries.length > 1))
+            return { failed: true }
+        var status = d.entry.status || {}
+        return {
+            failed: false,
+            windows: Catalog.notificationWindows(d.entry.usage, p),
+            statusLevel: typeof status.indicator === "string" ? status.indicator : "",
+            statusText: typeof status.description === "string" ? status.description : ""
+        }
+    }
+
+    function notifyChanges(p) {
+        var row = notificationRow(p)
+        var result = Notifications.transition(notificationState, p, row, {
+            threshold: Plasmoid.configuration.notifyThreshold,
+            quota: Plasmoid.configuration.notifyQuota,
+            status: Plasmoid.configuration.notifyStatus
+        })
+        notificationState = result.state
+        for (var i = 0; i < result.events.length; i++)
+            sendNotification(result.events[i], row)
+    }
+
+    function notificationText(event, row) {
+        if (event.kind === "low")
+            return i18n("%1: %2% left", event.label, event.remaining)
+        if (event.kind === "reset")
+            return i18n("%1 was reset: %2% left", event.label, event.remaining)
+        if (event.level === "none")
+            return i18n("The service has recovered.")
+        return row.statusText !== "" ? row.statusText : i18n("Service status: %1", event.level)
+    }
+
+    function sendNotification(event, row) {
+        var notification = notificationComponent.createObject(root, {
+            title: Catalog.meta(event.provider).name,
+            text: notificationText(event, row)
+        })
+        if (notification)
+            notification.sendEvent()
+    }
+
+    Component {
+        id: notificationComponent
+        Notification {
+            componentName: "plasma_workspace"
+            eventId: "notification"
+            iconName: Plasmoid.icon
+            autoDelete: true
+        }
+    }
+
     // the window behind a panel percentage and its remaining percent, or null
     function panelPick(p, source) {
         rev
@@ -854,7 +980,7 @@ PlasmoidItem {
         if (d.error && d.error.length > 0)
             return true
         var maxAge = Math.max(1, Plasmoid.configuration.refreshIntervalMinutes) * 60000 * 3
-        return (Date.now() - d.fetchedAt) > maxAge
+        return (nowMs - d.fetchedAt) > maxAge
     }
 
     P5Support.DataSource {
@@ -870,14 +996,12 @@ PlasmoidItem {
     }
 
     Timer {
-        // drives "Resets in …" countdowns and staleness
+        // Drives "Resets in …" countdowns, staleness and today's cost, which
+        // read nowMs. The data revision stays, so cards are not rebuilt.
         interval: 30000
         running: true
         repeat: true
-        onTriggered: {
-            root.nowMs = Date.now()
-            root.bump()
-        }
+        onTriggered: root.nowMs = Date.now()
     }
 
     Timer {
@@ -932,7 +1056,14 @@ PlasmoidItem {
     Connections {
         target: Plasmoid.configuration
         function onProviderSourcesChanged() {
-            if (root.componentReady)
+            // Copying config.json's sources back into the key changes nothing.
+            if (!root.componentReady || root.mirroringConfig)
+                return
+            // A source chosen on the settings page goes to config.json once
+            // it holds the sources; until then it is the probes' --source.
+            if (root.storesSources())
+                root.applyProviderSelection(root.keyProviderIds())
+            else
                 root.refreshAll(true)
         }
         function onEnabledProvidersChanged() {
@@ -961,7 +1092,9 @@ PlasmoidItem {
             currentTab = defaultTab()
         deferAutomaticCostScans()
         // In config mode every read of config.json is followed by probes.
-        if (!configMode)
+        // Before the component is ready the CLI check is still to come, and
+        // it refreshes everything once it knows the CLI.
+        if (componentReady && !configMode)
             refreshAll(true)
     }
 
