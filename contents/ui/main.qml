@@ -52,6 +52,11 @@ PlasmoidItem {
     // providerId -> { entry, entries, cost, costUpdatedAt, error, loading, fetchedAt }
     property var usageData: ({})
     property int rev: 0
+    // How Antigravity's model-family buckets are weighed (see Catalog.windowFor)
+    readonly property var antigravityOpts: ({
+        family: Plasmoid.configuration.antigravityFamily,
+        exhaustedAbove: Plasmoid.configuration.antigravityExhaustedPercent
+    })
     property double nowMs: Date.now()
     property string currentTab: ""
 
@@ -140,8 +145,8 @@ PlasmoidItem {
             if (d && d.entry && d.entry.usage) {
                 var u = d.entry.usage
                 var parts = []
-                var pw = Catalog.windowFor(u, p, 300, Plasmoid.configuration.antigravityFamily)
-                var sw = Catalog.windowFor(u, p, 10080, Plasmoid.configuration.antigravityFamily)
+                var pw = Catalog.windowFor(u, p, 300, antigravityOpts)
+                var sw = Catalog.windowFor(u, p, 10080, antigravityOpts)
                 if (Catalog.windowUsageKnown(pw)) parts.push("Session " + (100 - Catalog.normalizedPercent(pw.usedPercent)) + "% left")
                 if (Catalog.windowUsageKnown(sw)) parts.push("Weekly " + (100 - Catalog.normalizedPercent(sw.usedPercent)) + "% left")
                 lines.push(m.name + " — " + (parts.length > 0 ? parts.join(" · ") : "no data"))
@@ -963,7 +968,7 @@ PlasmoidItem {
         var d = usageData[p]
         if (!d || !d.entry || !d.entry.usage)
             return null
-        return Catalog.panelWindow(d.entry.usage, p, source, Plasmoid.configuration.antigravityFamily)
+        return Catalog.panelWindow(d.entry.usage, p, source, antigravityOpts)
     }
 
     // remaining percent for the panel icon / percent label; -1 = unknown

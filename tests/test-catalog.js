@@ -166,12 +166,19 @@ const agGemini5h = { primary: null, extraRateWindows: [
     { id: "antigravity-quota-summary-3p-5h", window: { usedPercent: 100, windowMinutes: 300 } },
 ] }
 assert.equal(catalog.windowFor(agGemini5h, "antigravity", 300).usedPercent, 100)
-assert.equal(catalog.windowFor(agGemini5h, "antigravity", 300, "all").usedPercent, 100)
-assert.equal(catalog.windowFor(agGemini5h, "antigravity", 300, "gemini").usedPercent, 20)
-assert.equal(catalog.windowFor(agGemini5h, "antigravity", 300, "claude-gpt").usedPercent, 100)
-assert.equal(catalog.panelWindow(agGemini5h, "antigravity", "session", "gemini").remaining, 80)
-assert.equal(catalog.panelWindow(agGemini5h, "antigravity", "lowest", "gemini").remaining, 80)
+assert.equal(catalog.windowFor(agGemini5h, "antigravity", 300, { family: "all" }).usedPercent, 100)
+assert.equal(catalog.windowFor(agGemini5h, "antigravity", 300, { family: "gemini" }).usedPercent, 20)
+assert.equal(catalog.windowFor(agGemini5h, "antigravity", 300, { family: "claude-gpt" }).usedPercent, 100)
+assert.equal(catalog.panelWindow(agGemini5h, "antigravity", "session", { family: "gemini" }).remaining, 80)
+assert.equal(catalog.panelWindow(agGemini5h, "antigravity", "lowest", { family: "gemini" }).remaining, 80)
 assert.equal(catalog.panelWindow(agGemini5h, "antigravity", "lowest").remaining, 0)
+// "active" skips buckets used beyond the threshold, but never shows nothing
+const active = { family: "active", exhaustedAbove: 99 }
+assert.equal(catalog.windowFor(agGemini5h, "antigravity", 300, active).usedPercent, 20)
+assert.equal(catalog.windowFor(agGemini5h, "antigravity", 300, { family: "active", exhaustedAbove: 100 }).usedPercent, 100)
+assert.equal(catalog.windowFor(agGemini5h, "antigravity", 300, { family: "active", exhaustedAbove: 10 }).usedPercent, 100)
+assert.equal(catalog.panelWindow(agGemini5h, "antigravity", "session", active).remaining, 80)
+assert.equal(catalog.panelWindow(agGemini5h, "antigravity", "lowest", active).remaining, 80)
 // local reports: the family pools carry no cadence, so no session or weekly
 const antigravityLocal = {
     primary: { usedPercent: 30, resetDescription: "in 5h" },

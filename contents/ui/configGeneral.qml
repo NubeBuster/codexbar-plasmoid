@@ -40,10 +40,11 @@ KCM.SimpleKCM {
     property string cfg_panelPercentSource
     property string cfg_percentStyle
     property string cfg_antigravityFamily
+    property alias cfg_antigravityExhaustedPercent: antigravityExhaustedSpin.value
 
     readonly property var sourceValues: ["session", "weekly", "lowest"]
     readonly property var styleValues: ["remaining", "used"]
-    readonly property var antigravityFamilyValues: ["all", "gemini", "claude-gpt"]
+    readonly property var antigravityFamilyValues: ["all", "active", "gemini", "claude-gpt"]
     readonly property var displayModeValues: ["meters", "logos", "logos-and-meters"]
     // Kirigami.FormLayout sizes itself to its widest item; wrapping hints and
     // path fields stay within this width instead of stretching the page.
@@ -145,12 +146,23 @@ KCM.SimpleKCM {
         QQC2.ComboBox {
             id: antigravityFamilyCombo
             Kirigami.FormData.label: i18n("Antigravity models:")
-            model: [i18n("Most constrained"), i18n("Gemini"), i18n("Claude and GPT")]
+            model: [i18n("Most constrained"), i18n("Most constrained, ignoring exhausted"),
+                    i18n("Gemini"), i18n("Claude and GPT")]
             function sync() {
                 currentIndex = Math.max(0, page.antigravityFamilyValues.indexOf(page.cfg_antigravityFamily))
             }
             Component.onCompleted: sync()
             onActivated: page.cfg_antigravityFamily = page.antigravityFamilyValues[currentIndex]
+        }
+
+        QQC2.SpinBox {
+            id: antigravityExhaustedSpin
+            Kirigami.FormData.label: i18n("Antigravity exhausted above:")
+            enabled: antigravityFamilyCombo.currentIndex === 1
+            from: 0
+            to: 99
+            textFromValue: function (value) { return i18n("%1% used", value) }
+            valueFromText: function (text) { return Math.max(0, Math.min(99, parseInt(text) || 99)) }
         }
 
         QQC2.SpinBox {

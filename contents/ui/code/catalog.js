@@ -362,12 +362,15 @@ function effectiveWindowMinutes(w, providerId, slot) {
     return 0
 }
 
-// `family` only matters to Antigravity: "gemini" or "claude-gpt" restricts the
-// pick to that model family's buckets, anything else weighs both.
-function windowFor(usage, providerId, wantedMinutes, family) {
+// `opts` only matters to Antigravity: { family, exhaustedAbove }. family
+// "gemini" or "claude-gpt" restricts the pick to that model family's buckets;
+// "active" weighs both but skips buckets whose usedPercent exceeds
+// exhaustedAbove (falling back to all buckets when every one is exhausted);
+// anything else weighs every bucket.
+function windowFor(usage, providerId, wantedMinutes, opts) {
     if (!usage) return null
     if (providerId === "antigravity")
-        return antigravityWindowFor(usage, wantedMinutes, family)
+        return antigravityWindowFor(usage, wantedMinutes, opts)
     var slots = ["primary", "secondary", "tertiary"]
     for (var i = 0; i < slots.length; i++) {
         var w = usableWindow(usage[slots[i]])
@@ -394,9 +397,9 @@ var ANTIGRAVITY_SUMMARY_PREFIX = "antigravity-quota-summary-"
 // Summary window id infix per selectable model family.
 var ANTIGRAVITY_FAMILY_IDS = { "gemini": "gemini-", "claude-gpt": "3p-" }
 
-function antigravitySummaryWindows(usage, family) {
+function antigravitySummaryWindows(usage, opts) {
     var extras = usage && usage.extraRateWindows ? usage.extraRateWindows : []
-    var infix = ANTIGRAVITY_FAMILY_IDS[family]
+    var infix = ANTIGRAVITY_FAMILY_IDS[opts ? opts.family : undefined]
     return extras.filter(function (ew) {
         return ew && typeof ew.id === "string"
             && ew.id.indexOf(ANTIGRAVITY_SUMMARY_PREFIX) === 0
@@ -405,15 +408,29 @@ function antigravitySummaryWindows(usage, family) {
     })
 }
 
-function antigravityWindowFor(usage, wantedMinutes, family) {
-    var summary = antigravitySummaryWindows(usage, family)
+function antigravityWindowFor(usage, wantedMinutes, opts) {
+    var summary = antigravitySummaryWindows(usage, opts)
     var candidates = summary.length > 0
         ? summary.map(namedWindow)
         : [usage.primary, usage.secondary, usage.tertiary].map(usableWindow)
+    if (opts && opts.family === "active") {
+        // Skip exhausted buckets; when every bucket is exhausted, show them.
+        var live = mostConstrained(candidates, wantedMinutes, Number(opts.exhaustedAbove))
+        if (live !== null)
+            return live
+    }
+    return mostConstrained(candidates, wantedMinutes, Infinity)
+}
+
+// Highest-usage known window of the wanted cadence, ignoring windows used
+// beyond `exhaustedAbove` percent.
+function mostConstrained(candidates, wantedMinutes, exhaustedAbove) {
     var best = null
     for (var i = 0; i < candidates.length; i++) {
         var w = candidates[i]
         if (!windowUsageKnown(w) || Number(w.windowMinutes) !== wantedMinutes)
+            continue
+        if (Number(w.usedPercent) > exhaustedAbove)
             continue
         if (best === null || Number(w.usedPercent) > Number(best.usedPercent))
             best = w
@@ -451,11 +468,11 @@ function isMonthly(minutes) {
 // source is "session" or "weekly" (each falls back to the other) or "lowest",
 // which also weighs monthly windows and usable extra windows such as
 // model-scoped weekly limits, since any of them can run out first.
-function panelWindow(usage, providerId, source, family) {
+function panelWindow(usage, providerId, source, opts) {
     if (!usage)
         return null
-    var session = remainingPick(windowFor(usage, providerId, 300, family))
-    var weekly = remainingPick(windowFor(usage, providerId, 10080, family))
+    var session = remainingPick(windowFor(usage, providerId, 300, opts))
+    var weekly = remainingPick(windowFor(usage, providerId, 10080, opts))
     if (source === "weekly")
         return weekly || session
     if (source !== "lowest")
@@ -467,11 +484,17 @@ function panelWindow(usage, providerId, source, family) {
         if (w && isMonthly(effectiveWindowMinutes(w, providerId, slots[s])))
             picks.push(remainingPick(w))
     }
-    var extras = providerId === "antigravity" && ANTIGRAVITY_FAMILY_IDS[family] !== undefined
-        ? antigravitySummaryWindows(usage, family)
+    var extras = providerId === "antigravity"
+        ? antigravitySummaryWindows(usage, opts)
         : usage.extraRateWindows || []
-    for (var i = 0; i < extras.length; i++)
-        picks.push(remainingPick(namedWindow(extras[i])))
+    for (var i = 0; i < extras.length; i++) {
+        var named = namedWindow(extras[i])
+        // "active" Antigravity skips exhausted buckets, as windowFor does
+        if (providerId === "antigravity" && opts && opts.family === "active"
+                && windowUsageKnown(named) && named.usedPercent > Number(opts.exhaustedAbove))
+            continue
+        picks.push(remainingPick(named))
+    }
     var lowest = null
     for (var j = 0; j < picks.length; j++) {
         if (picks[j] && (lowest === null || picks[j].remaining < lowest.remaining))
