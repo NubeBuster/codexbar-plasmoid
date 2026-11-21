@@ -140,8 +140,8 @@ PlasmoidItem {
             if (d && d.entry && d.entry.usage) {
                 var u = d.entry.usage
                 var parts = []
-                var pw = Catalog.windowFor(u, p, 300)
-                var sw = Catalog.windowFor(u, p, 10080)
+                var pw = Catalog.windowFor(u, p, 300, Plasmoid.configuration.antigravityFamily)
+                var sw = Catalog.windowFor(u, p, 10080, Plasmoid.configuration.antigravityFamily)
                 if (Catalog.windowUsageKnown(pw)) parts.push("Session " + (100 - Catalog.normalizedPercent(pw.usedPercent)) + "% left")
                 if (Catalog.windowUsageKnown(sw)) parts.push("Weekly " + (100 - Catalog.normalizedPercent(sw.usedPercent)) + "% left")
                 lines.push(m.name + " — " + (parts.length > 0 ? parts.join(" · ") : "no data"))
@@ -963,7 +963,7 @@ PlasmoidItem {
         var d = usageData[p]
         if (!d || !d.entry || !d.entry.usage)
             return null
-        return Catalog.panelWindow(d.entry.usage, p, source)
+        return Catalog.panelWindow(d.entry.usage, p, source, Plasmoid.configuration.antigravityFamily)
     }
 
     // remaining percent for the panel icon / percent label; -1 = unknown

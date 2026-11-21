@@ -39,9 +39,11 @@ KCM.SimpleKCM {
     property alias cfg_claudeAdapterPath: claudeAdapterPath.text
     property string cfg_panelPercentSource
     property string cfg_percentStyle
+    property string cfg_antigravityFamily
 
     readonly property var sourceValues: ["session", "weekly", "lowest"]
     readonly property var styleValues: ["remaining", "used"]
+    readonly property var antigravityFamilyValues: ["all", "gemini", "claude-gpt"]
     readonly property var displayModeValues: ["meters", "logos", "logos-and-meters"]
     // Kirigami.FormLayout sizes itself to its widest item; wrapping hints and
     // path fields stay within this width instead of stretching the page.
@@ -52,6 +54,7 @@ KCM.SimpleKCM {
 
     onCfg_panelPercentSourceChanged: sourceCombo.sync()
     onCfg_percentStyleChanged: styleCombo.sync()
+    onCfg_antigravityFamilyChanged: antigravityFamilyCombo.sync()
     onCfg_panelDisplayModeChanged: displayModeCombo.sync()
     onCfg_usageBarsShowUsedChanged: usageBarsFillCombo.sync()
     onCfg_middleClickActionChanged: middleClickCombo.sync()
@@ -137,6 +140,17 @@ KCM.SimpleKCM {
             }
             Component.onCompleted: sync()
             onActivated: page.cfg_percentStyle = page.styleValues[currentIndex]
+        }
+
+        QQC2.ComboBox {
+            id: antigravityFamilyCombo
+            Kirigami.FormData.label: i18n("Antigravity models:")
+            model: [i18n("Most constrained"), i18n("Gemini"), i18n("Claude and GPT")]
+            function sync() {
+                currentIndex = Math.max(0, page.antigravityFamilyValues.indexOf(page.cfg_antigravityFamily))
+            }
+            Component.onCompleted: sync()
+            onActivated: page.cfg_antigravityFamily = page.antigravityFamilyValues[currentIndex]
         }
 
         QQC2.SpinBox {

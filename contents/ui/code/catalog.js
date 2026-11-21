@@ -362,10 +362,12 @@ function effectiveWindowMinutes(w, providerId, slot) {
     return 0
 }
 
-function windowFor(usage, providerId, wantedMinutes) {
+// `family` only matters to Antigravity: "gemini" or "claude-gpt" restricts the
+// pick to that model family's buckets, anything else weighs both.
+function windowFor(usage, providerId, wantedMinutes, family) {
     if (!usage) return null
     if (providerId === "antigravity")
-        return antigravityWindowFor(usage, wantedMinutes)
+        return antigravityWindowFor(usage, wantedMinutes, family)
     var slots = ["primary", "secondary", "tertiary"]
     for (var i = 0; i < slots.length; i++) {
         var w = usableWindow(usage[slots[i]])
@@ -389,16 +391,22 @@ function windowFor(usage, providerId, wantedMinutes) {
 // wanted cadence. Local reports without a summary carry no cadence at all.
 var ANTIGRAVITY_SUMMARY_PREFIX = "antigravity-quota-summary-"
 
-function antigravitySummaryWindows(usage) {
+// Summary window id infix per selectable model family.
+var ANTIGRAVITY_FAMILY_IDS = { "gemini": "gemini-", "claude-gpt": "3p-" }
+
+function antigravitySummaryWindows(usage, family) {
     var extras = usage && usage.extraRateWindows ? usage.extraRateWindows : []
+    var infix = ANTIGRAVITY_FAMILY_IDS[family]
     return extras.filter(function (ew) {
         return ew && typeof ew.id === "string"
             && ew.id.indexOf(ANTIGRAVITY_SUMMARY_PREFIX) === 0
+            && (infix === undefined
+                || ew.id.indexOf(ANTIGRAVITY_SUMMARY_PREFIX + infix) === 0)
     })
 }
 
-function antigravityWindowFor(usage, wantedMinutes) {
-    var summary = antigravitySummaryWindows(usage)
+function antigravityWindowFor(usage, wantedMinutes, family) {
+    var summary = antigravitySummaryWindows(usage, family)
     var candidates = summary.length > 0
         ? summary.map(namedWindow)
         : [usage.primary, usage.secondary, usage.tertiary].map(usableWindow)
@@ -443,11 +451,11 @@ function isMonthly(minutes) {
 // source is "session" or "weekly" (each falls back to the other) or "lowest",
 // which also weighs monthly windows and usable extra windows such as
 // model-scoped weekly limits, since any of them can run out first.
-function panelWindow(usage, providerId, source) {
+function panelWindow(usage, providerId, source, family) {
     if (!usage)
         return null
-    var session = remainingPick(windowFor(usage, providerId, 300))
-    var weekly = remainingPick(windowFor(usage, providerId, 10080))
+    var session = remainingPick(windowFor(usage, providerId, 300, family))
+    var weekly = remainingPick(windowFor(usage, providerId, 10080, family))
     if (source === "weekly")
         return weekly || session
     if (source !== "lowest")
@@ -459,7 +467,9 @@ function panelWindow(usage, providerId, source) {
         if (w && isMonthly(effectiveWindowMinutes(w, providerId, slots[s])))
             picks.push(remainingPick(w))
     }
-    var extras = usage.extraRateWindows || []
+    var extras = providerId === "antigravity" && ANTIGRAVITY_FAMILY_IDS[family] !== undefined
+        ? antigravitySummaryWindows(usage, family)
+        : usage.extraRateWindows || []
     for (var i = 0; i < extras.length; i++)
         picks.push(remainingPick(namedWindow(extras[i])))
     var lowest = null
