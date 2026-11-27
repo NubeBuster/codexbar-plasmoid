@@ -156,6 +156,19 @@ MouseArea {
             function (p) { return plasmoidRoot.isStale(p) })
     }
 
+    // Whether an icon warns that its numbers may be out of date (#74). The
+    // merged meter warns for every provider it aggregates: a stale one can be
+    // lower than the value it shows.
+    function warnsFor(pid) {
+        if (pid !== "__merged__")
+            return plasmoidRoot.staleReason(pid) !== ""
+        for (var i = 0; i < mergedProviders.length; i++) {
+            if (plasmoidRoot.staleReason(mergedProviders[i]) !== "")
+                return true
+        }
+        return false
+    }
+
     // Effective per-icon display: the provider's override wins, else global.
     // The merged fallback icon always uses the global settings.
     function effectiveDisplayMode(pid) {
@@ -197,6 +210,22 @@ MouseArea {
         return ProviderOverrides.effectivePercentStyle(
             compactRoot.overrides, pid,
             Plasmoid.configuration.percentStyle)
+    }
+
+    // The balance an icon's label shows instead of a percentage (#73): always
+    // for a provider without a quota window, which would show "–", and for
+    // one with both when its override asks for the balance (by default only
+    // DeepSeek, whose window stands for its balance). The merged meter stays
+    // a percentage.
+    function balanceFor(pid, pick) {
+        if (pid === "__merged__")
+            return ""
+        var balance = plasmoidRoot.panelBalance(pid)
+        if (balance === "" || pick === null)
+            return balance
+        var automatic = Catalog.balanceReplacesPercent(pid) ? "balance" : "percent"
+        return ProviderOverrides.effectivePanelValue(compactRoot.overrides, pid, automatic) === "balance"
+            ? balance : ""
     }
 
     function showCountdownFor(pid) {
@@ -337,11 +366,14 @@ MouseArea {
                 id: providerItem
                 required property string modelData
                 readonly property string providerId: modelData
+                readonly property bool showsLogo: compactRoot.showsLogosFor(providerId) && providerId !== "__merged__"
+                readonly property bool warns: compactRoot.warnsFor(providerId)
+                readonly property real emblemSide: Math.round(compactRoot.iconSide * 0.5)
                 spacing: Kirigami.Units.smallSpacing
                 visible: !compactRoot.quietFor(providerId) || compactRoot.allQuiet()
 
                 Item {
-                    visible: compactRoot.showsLogosFor(providerItem.providerId) && providerItem.providerId !== "__merged__"
+                    visible: providerItem.showsLogo
                     Layout.preferredWidth: compactRoot.iconSide
                     Layout.preferredHeight: compactRoot.iconSide
                     Layout.alignment: Qt.AlignVCenter
@@ -357,6 +389,14 @@ MouseArea {
                         anchors.fill: parent
                         iconFile: Catalog.meta(providerItem.providerId).icon
                         displayContext: ProviderIconImage.ContrastingContext
+                    }
+
+                    StaleEmblem {
+                        visible: providerItem.warns
+                        width: providerItem.emblemSide
+                        height: providerItem.emblemSide
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
                     }
                 }
 
@@ -374,15 +414,26 @@ MouseArea {
                     stale: compactRoot.staleFor(providerItem.providerId)
                     hideCritters: compactRoot.hideCrittersFor(providerItem.providerId)
                     fillUsed: Plasmoid.configuration.usageBarsShowUsed
+
+                    // With a logo shown, the logo carries the emblem.
+                    StaleEmblem {
+                        visible: providerItem.warns && !providerItem.showsLogo
+                        width: providerItem.emblemSide
+                        height: providerItem.emblemSide
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                    }
                 }
 
                 ColumnLayout {
                     id: percentBlock
                     readonly property var pick: compactRoot.pickFor(
                         providerItem.providerId, compactRoot.percentSourceFor(providerItem.providerId))
+                    readonly property string balance: compactRoot.balanceFor(providerItem.providerId, pick)
                     // Time until the same window resets, like upstream's
                     // "Percent + reset" menu bar layout.
-                    readonly property string countdown: compactRoot.showCountdownFor(providerItem.providerId)
+                    readonly property string countdown: balance === ""
+                        && compactRoot.showCountdownFor(providerItem.providerId)
                         ? Catalog.panelCountdown(pick, plasmoidRoot.nowMs) : ""
                     // Logo modes label real providers only; do not present
                     // their empty fallback as a merged percentage value.
@@ -400,6 +451,8 @@ MouseArea {
                                 return styled
                             if (compactRoot.hasPaceInfoFor(providerItem.providerId))
                                 return ""
+                            if (percentBlock.balance !== "")
+                                return percentBlock.balance
                             if (!percentBlock.pick)
                                 return "–"
                             var v = percentBlock.pick.remaining

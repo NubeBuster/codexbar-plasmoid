@@ -13,8 +13,9 @@ const catalog = {}
 vm.createContext(catalog)
 vm.runInContext(source, catalog, { filename: "catalog.js" })
 
-// An unknown --provider makes the CLI report the providers enabled in its
-// own config; only the requested provider's entries may be shown.
+// Before CodexBar 0.85.0 an unknown --provider made the CLI report the
+// providers enabled in its own config; only the requested provider's entries
+// may be shown.
 const fallbackReport = [
     { provider: "codex", source: "auto", usage: { primary: { usedPercent: 12 } } },
     { provider: "claude", source: "auto", usage: { primary: { usedPercent: 34 } } },
@@ -64,6 +65,21 @@ assert.equal(catalog.errorForProvider([{ provider: "claude", error: { code: 1 } 
 assert.equal(catalog.errorForProvider([{ provider: "cli", error: "broken" }], "claude"), "")
 assert.equal(catalog.errorForProvider(null, "claude"), "")
 assert.equal(catalog.errorForProvider({ provider: "cli", error: { message: "x" } }, "claude"), "")
+
+// CodexBar 0.85.0 rejects an unknown --provider with an argument error.
+const rejected = [{ provider: "cli", source: "cli", error: { code: 1, message: "Error: unknown provider 'hyper'", kind: "args" } }]
+assert.equal(catalog.rejectsProvider(rejected), true)
+assert.equal(catalog.entriesForProvider(rejected, "hyper").length, 0)
+// other argument errors, config and provider errors, usage and junk are not
+assert.equal(catalog.rejectsProvider([{ provider: "cli", source: "cli",
+    error: { code: 1, message: "Error: --source must be auto|web|cli|oauth|api.", kind: "args" } }]), false)
+assert.equal(catalog.rejectsProvider(cliEnvelope), false)
+assert.equal(catalog.rejectsProvider(geminiError), false)
+assert.equal(catalog.rejectsProvider([{ provider: "hyper", error: { kind: "args", message: "unknown provider" } }]), false)
+assert.equal(catalog.rejectsProvider(fallbackReport), false)
+assert.equal(catalog.rejectsProvider([{ provider: "cli", error: { kind: "args" } }]), false)
+assert.equal(catalog.rejectsProvider([null]), false)
+assert.equal(catalog.rejectsProvider(null), false)
 
 // fully colored logos keep a transparent chip; near-white brands get a dark one
 assert.equal(catalog.logoBackgroundColor("codebuff"), "transparent")
@@ -198,6 +214,65 @@ assert.deepEqual(plain(catalog.cardSlots(antigravity, "codex")),
     ["primary", "secondary", "tertiary"])
 assert.equal(catalog.slotTitle("codex", "secondary", 10080), "Weekly")
 assert.equal(catalog.slotTitle("codex", "tertiary", 0), "Monthly")
+
+// CodexBar's own names for the windows (rateWindowLabels) win over the
+// duration or slot, such as Gemini's three daily model quotas.
+const geminiLabels = { primary: "Pro", secondary: "Flash", tertiary: "Flash Lite" }
+assert.equal(catalog.windowLabel(geminiLabels, "primary", "gemini"), "Pro")
+assert.equal(catalog.slotTitle("gemini", "secondary", 1440,
+    catalog.windowLabel(geminiLabels, "secondary", "gemini")), "Flash")
+assert.equal(catalog.slotTitle("gemini", "tertiary", 1440,
+    catalog.windowLabel(geminiLabels, "tertiary", "gemini")), "Flash Lite")
+assert.equal(catalog.slotTitle("kimi", "primary", 10080,
+    catalog.windowLabel({ primary: " 7-day usage " }, "primary", "kimi")), "7-day usage")
+assert.equal(catalog.slotTitle("antigravity", "primary", 300,
+    catalog.windowLabel({ primary: "Gemini Models" }, "primary", "antigravity")), "Gemini Models")
+// "Sonnet" is the generic name of a third window, and only Claude's own
+assert.equal(catalog.windowLabel({ tertiary: "Sonnet" }, "tertiary", "claude"), "Sonnet")
+assert.equal(catalog.windowLabel({ tertiary: "Sonnet" }, "tertiary", "groqcloud"), "")
+assert.equal(catalog.slotTitle("groqcloud", "tertiary", 0,
+    catalog.windowLabel({ tertiary: "Sonnet" }, "tertiary", "groqcloud")), "Monthly")
+assert.equal(catalog.windowLabel({ secondary: "Sonnet" }, "secondary", "groqcloud"), "Sonnet")
+// no labels (CLIs before 0.65), another slot's label, an empty or odd one
+assert.equal(catalog.windowLabel(undefined, "primary", "codex"), "")
+assert.equal(catalog.windowLabel(null, "primary", "codex"), "")
+assert.equal(catalog.windowLabel({ primary: "Session" }, "secondary", "codex"), "")
+assert.equal(catalog.windowLabel({ secondary: "" }, "secondary", "mistral"), "")
+assert.equal(catalog.windowLabel({ primary: 5 }, "primary", "codex"), "")
+assert.equal(catalog.slotTitle("codex", "secondary", 10080, ""), "Weekly")
+
+// Usage bars: the brand color, the text color for brands that vanish on a
+// light or dark theme, and a muted color while showing data from before a
+// failed refresh.
+assert.equal(catalog.barColor("codex", "#232629", false, "#a0a0a0"), "#49A3B0")
+assert.equal(catalog.barColor("vercel", "#232629", false, "#a0a0a0"), "#232629")
+assert.equal(catalog.barColor("trustedrouter", "#fcfcfc"), "#fcfcfc")
+assert.equal(catalog.barColor("codex", "#232629", true, "#a0a0a0"), "#a0a0a0")
+assert.equal(catalog.barColor("myplugin", "#232629"), "#888888")
+for (const id of catalog.LABEL_COLORED_BARS)
+    assert.ok(catalog.PROVIDERS[id] !== undefined, id)
+
+// Detail-backed windows carry a detail instead of a reset time: their cards
+// say "Resets …" only for a reset date, like the CLI (TrustedRouter's key
+// limit, Google Developer Program's credit).
+const resetNow = Date.parse("2026-11-26T12:00:00Z")
+const keyLimit = { usedPercent: 18, resetDescription: " $1.80 / $10.00 " }
+assert.equal(catalog.isDetailBacked("trustedrouter"), true)
+assert.equal(catalog.isDetailBacked("codex"), false)
+assert.equal(catalog.resetText(keyLimit, resetNow, true), "")
+assert.equal(catalog.windowDetail(keyLimit, "trustedrouter"), "$1.80 / $10.00")
+const credit = { usedPercent: 40, resetDescription: "$6.00 of $10.00 left", resetsAt: "2026-11-27T15:00:00Z" }
+assert.equal(catalog.resetText(credit, resetNow, true), "Resets in 1d 3h")
+assert.equal(catalog.windowDetail(credit, "googledeveloper"), "$6.00 of $10.00 left")
+// everywhere else the description stays the reset time it is
+const described = { usedPercent: 10, resetDescription: "tomorrow at 9:00" }
+assert.equal(catalog.resetText(described, resetNow), "Resets tomorrow at 9:00")
+assert.equal(catalog.resetText(described, resetNow, false), "Resets tomorrow at 9:00")
+assert.equal(catalog.windowDetail(described, "codex"), "")
+assert.equal(catalog.windowDetail({ usedPercent: 10 }, "trustedrouter"), "")
+assert.equal(catalog.windowDetail(null, "trustedrouter"), "")
+for (const id of catalog.DETAIL_BACKED_WINDOWS)
+    assert.ok(catalog.PROVIDERS[id] !== undefined, id)
 
 // unknown usage on a named extra window reaches the window helpers
 const unknownExtra = catalog.namedWindow(antigravity.extraRateWindows[3])
@@ -352,6 +427,50 @@ assert.deepEqual(plain(catalog.notificationWindows(antigravity, "antigravity").m
     "extra:antigravity-quota-summary-3p-5h",
 ])
 assert.deepEqual(plain(catalog.notificationWindows(null, "codex")), [])
+// with the CLI's names for the windows
+assert.deepEqual(plain(catalog.notificationWindows(
+    { primary: { usedPercent: 30, windowMinutes: 1440 }, secondary: { usedPercent: 10, windowMinutes: 1440 } },
+    "copilot", { primary: "Premium", secondary: "Chat" }).map((w) => w.label)), ["Premium", "Chat"])
+
+// The balance a panel label shows (#73) is the first one the card lists.
+assert.equal(catalog.panelBalance("replicate",
+    { providerCost: { used: 3.25, limit: 0, currencyCode: "USD", period: "This month", balance: 42.5 } }), "$ 42.50")
+assert.equal(catalog.panelBalance("claude",
+    { providerCost: { used: 3.2, limit: 50, currencyCode: "USD", period: "Monthly", balance: 14.46 } }), "$ 14.46")
+assert.equal(catalog.panelBalance("siliconflow",
+    { providerCost: { used: 0, limit: 0, currencyCode: "CNY", balance: 12.3 } }), "12.30 CNY")
+assert.equal(catalog.panelBalance("codex",
+    { providerCost: { used: 0, limit: 0, currencyCode: "Credits", balance: 1200 } }), "1200.00 Credits")
+// DeepSeek's balance is the start of its window's description, and it
+// replaces the window's meaningless percentage
+const deepseek = (description) => ({ primary: { usedPercent: 0, resetDescription: description } })
+assert.equal(catalog.panelBalance("deepseek", deepseek("¥12.34 (Paid: ¥10.00 / Granted: ¥2.34)")), "¥12.34")
+assert.equal(catalog.panelBalance("deepseek", deepseek("$0.00 — add credits at platform.deepseek.com")), "$0.00")
+assert.equal(catalog.panelBalance("deepseek", deepseek("Balance unavailable for API calls")), "")
+assert.equal(catalog.panelBalance("deepinfra", deepseek("$5.00 (Paid: $5.00 / Granted: $0.00)")), "")
+assert.equal(catalog.balanceReplacesPercent("deepseek"), true)
+assert.equal(catalog.balanceReplacesPercent("claude"), false)
+// a spend without a balance, no cost at all or no usage show no balance
+assert.equal(catalog.panelBalance("cursor", { providerCost: { used: 12, limit: 100, currencyCode: "USD" } }), "")
+assert.equal(catalog.panelBalance("codex", { providerCost: { used: 0, limit: 0, currencyCode: "USD", balance: 5 } }), "")
+assert.equal(catalog.panelBalance("replicate", {}), "")
+assert.equal(catalog.panelBalance("replicate", null), "")
+
+// Why a provider's numbers may be out of date (#74): the CLI's error, else
+// the age of data fetched more than maxAge ago; nothing before the first
+// answer or while the data is current.
+const staleNow = Date.parse("2026-11-26T12:00:00Z")
+const fifteenMinutes = 15 * 60 * 1000
+assert.equal(catalog.staleReason(undefined, fifteenMinutes, staleNow), "")
+assert.equal(catalog.staleReason({ loading: true }, fifteenMinutes, staleNow), "")
+assert.equal(catalog.staleReason({ fetchedAt: staleNow - 60000, entry: {} }, fifteenMinutes, staleNow), "")
+assert.equal(catalog.staleReason({ fetchedAt: staleNow - 60000, error: " Not logged in to Gemini. " },
+    fifteenMinutes, staleNow), "Not logged in to Gemini.")
+assert.equal(catalog.staleReason({ fetchedAt: staleNow - 2 * 3600000, entry: {} }, fifteenMinutes, staleNow),
+    "Updated 2h ago")
+assert.equal(catalog.staleReason({ fetchedAt: staleNow - 2 * 3600000, error: "Timed out querying the CodexBar CLI" },
+    fifteenMinutes, staleNow), "Timed out querying the CodexBar CLI")
+assert.equal(catalog.staleReason({ fetchedAt: staleNow - 60000, error: "" }, fifteenMinutes, staleNow), "")
 
 // Reset countdown (#30): the window behind the panel percentage
 const countdownNow = Date.parse("2026-09-30T12:00:00Z")

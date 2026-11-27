@@ -102,6 +102,8 @@ PlasmoidItem {
     property var probes: UsageProbes.initialState()
     // What the opt-in notifications last saw per provider (Notifications).
     property var notificationState: ({})
+    // Failed refreshes per provider (Notifications.failureTransition).
+    property var failureState: ({})
 
     // Optional schema-v1 claude-swap-compatible adapter state. Normal Claude
     // usage/cost queries remain active for the panel, overview and fallback UI.
@@ -155,6 +157,9 @@ PlasmoidItem {
             } else {
                 lines.push(m.name + " — no data")
             }
+            var reason = staleReason(p)
+            if (reason !== "")
+                lines.push("⚠ " + reason)
         }
         return lines.join("\n")
     }
@@ -656,8 +661,8 @@ PlasmoidItem {
         return i18n("No usage data — check CodexBar login/configuration (exit %1)", exitCode)
     }
 
-    // The CLI answered for other providers only, so it does not know this
-    // one: the provider is newer than the installed CLI or was removed.
+    // The CLI does not know this provider: it is newer than the installed
+    // CLI or was removed.
     function unsupportedProviderText(p) {
         var required = Catalog.meta(p).minCli
         if (required && cliState.detectedVersion !== ""
@@ -849,10 +854,15 @@ PlasmoidItem {
             if (trimmed.length > 0) {
                 try { parsed = JSON.parse(trimmed) } catch (e) { parseFailed = true }
             }
-            // An unknown --provider name makes the CLI report the providers
-            // enabled in its own config; only this provider's entries count.
+            // Only this provider's entries count (Catalog.entriesForProvider).
             var entries = Catalog.entriesForProvider(parsed, req.p)
             var cliError = Catalog.errorForProvider(parsed, req.p)
+            // The CLI does not know the provider: CodexBar 0.85.0 and newer
+            // reject its name, older releases answer for the providers
+            // enabled in their own config instead.
+            var unknownProvider = Catalog.rejectsProvider(parsed)
+                || (entries.length === 0 && cliError === ""
+                    && Array.isArray(parsed) && parsed.length > 0)
             if (entries.length > 0 && entries[0].usage) {
                 d.entry = entries[0]
                 d.entries = entries
@@ -860,16 +870,16 @@ PlasmoidItem {
                 d.errorCode = ""
                 cliState = CliStatus.applyUsageResult(
                     cliState, req.cliGeneration, exitCode, true, false)
-            } else if (cliError !== "") {
-                // The CLI explains the failure itself, such as a missing
-                // login or a config.json it cannot decode, so it works.
-                d.error = cliError
-                d.errorCode = ""
-            } else if (entries.length === 0 && Array.isArray(parsed) && parsed.length > 0) {
+            } else if (unknownProvider) {
                 // The CLI itself works, so its state stays as it is.
                 delete d.entry
                 delete d.entries
                 d.error = unsupportedProviderText(req.p)
+                d.errorCode = ""
+            } else if (cliError !== "") {
+                // The CLI explains the failure itself, such as a missing
+                // login or a config.json it cannot decode, so it works.
+                d.error = cliError
                 d.errorCode = ""
             } else {
                 d.error = usageErrorText(req.p, exitCode, parseFailed)
@@ -915,7 +925,7 @@ PlasmoidItem {
         var status = d.entry.status || {}
         return {
             failed: false,
-            windows: Catalog.notificationWindows(d.entry.usage, p),
+            windows: Catalog.notificationWindows(d.entry.usage, p, d.entry.rateWindowLabels),
             statusLevel: typeof status.indicator === "string" ? status.indicator : "",
             statusText: typeof status.description === "string" ? status.description : ""
         }
@@ -931,9 +941,17 @@ PlasmoidItem {
         notificationState = result.state
         for (var i = 0; i < result.events.length; i++)
             sendNotification(result.events[i], row)
+        var d = usageData[p]
+        var failure = Notifications.failureTransition(failureState, p, d && d.error ? d.error : "",
+                                                      Plasmoid.configuration.notifyFailures)
+        failureState = failure.state
+        for (var j = 0; j < failure.events.length; j++)
+            sendNotification(failure.events[j], row)
     }
 
     function notificationText(event, row) {
+        if (event.kind === "failed")
+            return i18n("Refresh failed: %1", event.error)
         if (event.kind === "low")
             return i18n("%1: %2% left", event.label, event.remaining)
         if (event.kind === "reset")
@@ -971,10 +989,22 @@ PlasmoidItem {
         return Catalog.panelWindow(d.entry.usage, p, source, antigravityOpts)
     }
 
+    // The balance p's panel label can show (Catalog.panelBalance), or "".
+    function panelBalance(p) {
+        rev
+        var d = usageData[p]
+        return d && d.entry ? Catalog.panelBalance(p, d.entry.usage) : ""
+    }
+
     // remaining percent for the panel icon / percent label; -1 = unknown
     function remainingPercent(p, source) {
         var pick = panelPick(p, source)
         return pick ? pick.remaining : -1
+    }
+
+    // Data counts as stale after three refresh intervals without an answer.
+    function staleAfterMs() {
+        return Math.max(1, Plasmoid.configuration.refreshIntervalMinutes) * 60000 * 3
     }
 
     function isStale(p) {
@@ -984,8 +1014,14 @@ PlasmoidItem {
             return true
         if (d.error && d.error.length > 0)
             return true
-        var maxAge = Math.max(1, Plasmoid.configuration.refreshIntervalMinutes) * 60000 * 3
-        return (nowMs - d.fetchedAt) > maxAge
+        return (nowMs - d.fetchedAt) > staleAfterMs()
+    }
+
+    // Why p's numbers may be out of date (Catalog.staleReason): what the
+    // panel's warning emblem and the tooltip report, "" when nothing.
+    function staleReason(p) {
+        rev
+        return Catalog.staleReason(usageData[p], staleAfterMs(), nowMs)
     }
 
     P5Support.DataSource {

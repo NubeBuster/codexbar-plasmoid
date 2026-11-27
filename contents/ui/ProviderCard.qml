@@ -23,7 +23,10 @@ ColumnLayout {
     }
     readonly property var entry: d && d.entry ? d.entry : null
     readonly property var usage: entry && entry.usage ? entry.usage : null
-    readonly property color brandColor: meta.color
+    // The bars still show data from before a failed refresh.
+    readonly property bool retained: !!(usage && d.error && d.error.length > 0)
+    readonly property color barColor: Catalog.barColor(providerId, Kirigami.Theme.textColor,
+                                                       retained, Kirigami.Theme.disabledTextColor)
 
     spacing: Kirigami.Units.smallSpacing
 
@@ -40,7 +43,8 @@ ColumnLayout {
                 continue
             var minutes = Catalog.effectiveWindowMinutes(w, providerId, slot)
             out.push({
-                title: Catalog.slotTitle(providerId, slot, minutes),
+                title: Catalog.slotTitle(providerId, slot, minutes,
+                                         Catalog.windowLabel(entry.rateWindowLabels, slot, providerId)),
                 win: w,
                 minutes: minutes,
                 pace: Catalog.slotPace(entry, slot)
@@ -239,7 +243,7 @@ ColumnLayout {
             UsageBar {
                 Layout.fillWidth: true
                 percent: Catalog.windowBarFill(section.modelData.win, Plasmoid.configuration.usageBarsShowUsed)
-                fillColor: card.brandColor
+                fillColor: card.barColor
             }
 
             RowLayout {
@@ -256,10 +260,21 @@ ColumnLayout {
                 Item { Layout.fillWidth: true }
 
                 PlasmaComponents3.Label {
-                    text: Catalog.resetText(section.modelData.win, plasmoidRoot.nowMs)
+                    text: Catalog.resetText(section.modelData.win, plasmoidRoot.nowMs,
+                                            Catalog.isDetailBacked(card.providerId))
                     opacity: 0.6
                     font: Kirigami.Theme.smallFont
                 }
+            }
+
+            // what a detail-backed window reports instead of a reset time
+            TruncatedLabel {
+                visible: text !== ""
+                text: Catalog.windowDetail(section.modelData.win, card.providerId)
+                opacity: 0.6
+                font: Kirigami.Theme.smallFont
+                Layout.fillWidth: true
+                elide: Text.ElideRight
             }
 
             TruncatedLabel {
@@ -361,7 +376,7 @@ ColumnLayout {
                         visible: detailRow.modelData.percent >= 0
                         Layout.fillWidth: true
                         percent: Math.max(0, detailRow.modelData.percent)
-                        fillColor: card.brandColor
+                        fillColor: card.barColor
                     }
                 }
             }

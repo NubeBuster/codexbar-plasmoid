@@ -6,7 +6,7 @@
 .pragma library
 
 var PROVIDERS = {
-    // Order follows `codexbar usage --help` (CodexBar 0.84.0).
+    // Order follows `codexbar usage --help` (CodexBar 0.85.0).
     "codex":        { name: "Codex",              color: "#49A3B0", dashboard: "https://chatgpt.com/settings/usage?tab=overview", status: "https://status.openai.com/", icon: "ProviderIcon-codex.svg", critter: "codex" },
     "openai":       { name: "OpenAI",             color: "#0F826E", dashboard: "https://platform.openai.com/usage", status: "https://status.openai.com", icon: "ProviderIcon-codex.svg" },
     "azure-openai": { name: "Azure OpenAI",       color: "#0078D4", dashboard: "https://ai.azure.com", status: "https://azure.status.microsoft/en-us/status", icon: "ProviderIcon-codex.svg" },
@@ -119,11 +119,42 @@ var PROVIDERS = {
     "abliteration": { name: "abliteration.ai",    color: "#1B1B1B", dashboard: "https://abliteration.ai", status: "", icon: "ProviderIcon-abliteration.svg", minCli: "0.81.0" },
     "opendesign":   { name: "OpenDesign",         color: "#202020", dashboard: "https://open-design.ai/cloud/dashboard", status: "", icon: "ProviderIcon-opendesign.svg", minCli: "0.83.0" },
     "siliconflow":  { name: "SiliconFlow",        color: "#6E29F5", dashboard: "https://cloud.siliconflow.cn", status: "", icon: "ProviderIcon-siliconflow.svg", minCli: "0.84.0" },
-    "tripo":        { name: "Tripo",              color: "#F8CF00", dashboard: "https://developers.tripo3d.ai/en/billing", status: "https://tripo3d.statuspage.io", icon: "ProviderIcon-tripo.svg", minCli: "0.84.0" }
+    "tripo":        { name: "Tripo",              color: "#F8CF00", dashboard: "https://developers.tripo3d.ai/en/billing", status: "https://tripo3d.statuspage.io", icon: "ProviderIcon-tripo.svg", minCli: "0.84.0" },
+    "googledeveloper": { name: "Google Developer Program", color: "#5B8DEF", dashboard: "https://me.developers.google.com/benefits", status: "", icon: "ProviderIcon-googledeveloper.svg", minCli: "0.85.0" },
+    "trustedrouter": { name: "TrustedRouter",      color: "#A9CDB9", dashboard: "https://trustedrouter.com/console", status: "", icon: "ProviderIcon-trustedrouter.svg", minCli: "0.85.0" }
 }
 
 // Providers whose local logs the `codexbar cost` command can price.
 var COST_PROVIDERS = ["claude", "codex"]
+
+// Providers whose rate windows carry a detail such as "$1.80 / $10.00" in
+// resetDescription instead of a reset time (usesDetailBackedWindow in their
+// upstream descriptors). Like the CLI, their cards say "Resets …" only for a
+// reset date and show the description as a detail line (windowDetail).
+var DETAIL_BACKED_WINDOWS = [
+    "abacusai", "abliteration", "aixy", "bifrost", "chutes", "claudeplatform",
+    "deepinfra", "deepseek", "googledeveloper", "kilo", "llmman", "litellm",
+    "longcat", "manus", "mimo", "mistral", "neuralwatt", "perplexity", "qoder",
+    "raycast", "trustedrouter", "v0", "warp", "workbuddy"
+]
+
+function isDetailBacked(id) {
+    return DETAIL_BACKED_WINDOWS.indexOf(id) >= 0
+}
+
+// Providers whose usage bars upstream draws in the text color rather than
+// the brand color (progressColorStyle: .label in their descriptors): white,
+// black or pale brands that would vanish on a light or a dark theme.
+var LABEL_COLORED_BARS = ["abliteration", "elevenlabs", "opendesign", "soniox", "trustedrouter", "vercel"]
+
+// The fill of a provider's usage bars, like upstream's menu card: the brand
+// color, the text color for LABEL_COLORED_BARS, and staleColor while the bars
+// still show the data from before a failed refresh.
+function barColor(id, textColor, retained, staleColor) {
+    if (retained === true)
+        return staleColor
+    return LABEL_COLORED_BARS.indexOf(id) >= 0 ? textColor : meta(id).color
+}
 
 // Display names of providers the catalog does not know, such as user plugins
 // listed in CodexBar's config.json.
@@ -177,10 +208,11 @@ function cliProviderId(reported) {
     return reported
 }
 
-// The CLI does not reject a --provider name it does not know (a provider
-// that is newer than the installed CLI, or one removed upstream); it reports
-// the providers enabled in its own config instead. Keep only the entries of
-// the requested provider. Entries without a provider field are kept.
+// Before CodexBar 0.85.0 the CLI did not reject a --provider name it does
+// not know (a provider that is newer than the installed CLI, or one removed
+// upstream); it reported the providers enabled in its own config instead.
+// Keep only the entries of the requested provider. Entries without a
+// provider field are kept.
 function entriesForProvider(entries, id) {
     if (!Array.isArray(entries))
         return []
@@ -189,6 +221,20 @@ function entriesForProvider(entries, id) {
         return entry !== null && typeof entry === "object"
             && (typeof entry.provider !== "string"
                 || entry.provider === reported || entry.provider === id)
+    })
+}
+
+// Since CodexBar 0.85.0 the CLI rejects a --provider name it does not know
+// with an argument error ("Error: unknown provider 'x'") in its "cli" entry.
+// Other argument errors do not name a provider.
+function rejectsProvider(entries) {
+    if (!Array.isArray(entries))
+        return false
+    return entries.some(function (entry) {
+        var error = entry !== null && typeof entry === "object" && entry.provider === "cli"
+            ? entry.error : null
+        return !!error && error.kind === "args" && typeof error.message === "string"
+            && /provider/i.test(error.message)
     })
 }
 
@@ -268,6 +314,34 @@ function costBalances(providerId, cost) {
     }
 }
 
+// The balance a provider's panel label shows (#73): the first balance its
+// card lists (costBalances), written as the card writes it, or "" when the
+// provider reports none. DeepSeek reports its balance only in its window's
+// description ("¥12.34 (Paid: ¥10.00 / Granted: ¥2.34)"), whose first part
+// upstream's menu bar shows (deepSeekBalanceText).
+function panelBalance(providerId, usage) {
+    if (!usage)
+        return ""
+    var balances = costBalances(providerId, usage.providerCost)
+    if (balances.length > 0)
+        return amountText(balances[0].amount, balances[0].currencyCode)
+    if (providerId === "deepseek") {
+        var w = usableWindow(usage.primary)
+        var description = w && typeof w.resetDescription === "string" ? w.resetDescription.trim() : ""
+        if (description.charAt(0) === "$" || description.charAt(0) === "¥")
+            return description.split(" ")[0]
+    }
+    return ""
+}
+
+// Whether a provider's label shows its balance rather than the percentage of
+// its window unless an override says otherwise: DeepSeek's only window stands
+// for its balance, so its percentage means nothing (upstream's menu bar shows
+// the balance there too).
+function balanceReplacesPercent(providerId) {
+    return providerId === "deepseek"
+}
+
 // Whether a card without a usable primary window shows the generic
 // "Cost: used / limit" line; balance-only snapshots do not.
 function showsCostFallback(providerId, cost) {
@@ -287,8 +361,9 @@ function showsCostFallback(providerId, cost) {
 }
 
 // "Resets in 3h 53m" / "Resets in 3d 20h" — like the original menu rows.
-// Falls back to the CLI's resetDescription when no exact timestamp exists.
-function resetText(win, nowMs) {
+// Falls back to the CLI's resetDescription when no exact timestamp exists,
+// except for detail-backed windows, whose description is no reset time.
+function resetText(win, nowMs, detailBacked) {
     if (!win) return ""
     if (win.resetsAt) {
         var t = Date.parse(win.resetsAt)
@@ -298,11 +373,21 @@ function resetText(win, nowMs) {
             return "Resets in " + duration(s)
         }
     }
+    if (detailBacked === true)
+        return ""
     if (win.resetDescription) {
         var desc = win.resetDescription.trim()
         return desc.toLowerCase().indexOf("reset") === 0 ? desc : "Resets " + desc
     }
     return ""
+}
+
+// The detail line of a detail-backed provider's window, such as
+// "$1.80 / $10.00" (CLIRenderer's detailLineForDetailBackedWindow).
+function windowDetail(win, providerId) {
+    if (!win || !isDetailBacked(providerId) || typeof win.resetDescription !== "string")
+        return ""
+    return win.resetDescription.trim()
 }
 
 function duration(s) {
@@ -327,6 +412,21 @@ function updatedText(isoDate, nowMs) {
     if (s < 3600) return "Updated " + Math.floor(s / 60) + "m ago"
     if (s < 86400) return "Updated " + Math.floor(s / 3600) + "h ago"
     return "Updated " + Math.floor(s / 86400) + "d ago"
+}
+
+// Why a provider's numbers may be out of date, for the panel's warning
+// emblem and the tooltip (#74): the CLI's error when its last refresh failed,
+// else the age of data fetched longer than maxAgeMs ago. "" while the data is
+// current, and before the provider's first answer, so starting up shows no
+// warning. data is the provider's entry in the widget's usageData.
+function staleReason(data, maxAgeMs, nowMs) {
+    if (!data || !data.fetchedAt)
+        return ""
+    if (typeof data.error === "string" && data.error.trim() !== "")
+        return data.error.trim()
+    if (nowMs - data.fetchedAt > maxAgeMs)
+        return updatedText(new Date(data.fetchedAt).toISOString(), nowMs)
+    return ""
 }
 
 // --- rate-window helpers (synthetic placeholders, unknown usage) ---
@@ -626,9 +726,28 @@ function cardSlots(usage, providerId) {
     return ["primary", "secondary", "tertiary"]
 }
 
-// Card title for a slot window. Antigravity's slots are model families
+// The name CodexBar gives a slot's window, from the `rateWindowLabels` the
+// CLI reports next to the usage (CodexBar 0.65 and newer): Copilot's
+// "Premium" and "Chat", Gemini's "Pro", "Flash" and "Flash Lite", or "Limit"
+// for TrustedRouter's key limit. "" when there is none. A provider without a
+// name for its third window gets the generic "Sonnet" there, which upstream
+// does not show; only Claude's third window is Sonnet.
+function windowLabel(labels, slot, providerId) {
+    var label = labels !== null && typeof labels === "object" ? labels[slot] : null
+    if (typeof label !== "string")
+        return ""
+    label = label.trim()
+    if (slot === "tertiary" && label === "Sonnet" && providerId !== "claude")
+        return ""
+    return label
+}
+
+// Card title for a slot window: CodexBar's name for it (windowLabel), else
+// one from its duration or slot. Antigravity's slots are model families
 // (CodexBarCore's session/weekly labels for it), not time windows.
-function slotTitle(providerId, slot, windowMinutes) {
+function slotTitle(providerId, slot, windowMinutes, label) {
+    if (typeof label === "string" && label !== "")
+        return label
     if (providerId === "antigravity") {
         if (slot === "primary") return "Gemini Models"
         if (slot === "secondary") return "Claude and GPT"
@@ -639,8 +758,9 @@ function slotTitle(providerId, slot, windowMinutes) {
 }
 
 // The windows notifications watch, as the card lists them: [{ key, label,
-// remaining, resetsAt }] for every window with a known reading.
-function notificationWindows(usage, providerId) {
+// remaining, resetsAt }] for every window with a known reading. labels are
+// the entry's rateWindowLabels.
+function notificationWindows(usage, providerId, labels) {
     var out = []
     if (!usage)
         return out
@@ -651,7 +771,8 @@ function notificationWindows(usage, providerId) {
             continue
         out.push({
             key: slots[i],
-            label: slotTitle(providerId, slots[i], effectiveWindowMinutes(w, providerId, slots[i])),
+            label: slotTitle(providerId, slots[i], effectiveWindowMinutes(w, providerId, slots[i]),
+                             windowLabel(labels, slots[i], providerId)),
             remaining: 100 - normalizedPercent(w.usedPercent),
             resetsAt: typeof w.resetsAt === "string" ? w.resetsAt : ""
         })

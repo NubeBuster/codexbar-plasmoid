@@ -36,9 +36,9 @@ failed=0
 # #47 grew the panel icons from 32 to about 100 px and the job stayed green.
 expect_extent() {
     local name="$1" axis="$2" min="$3" max="$4" crop="$5" geometry size
-    geometry="$(magick "$out/$name.png" -crop "$crop" +repage -fuzz 3% -trim -format '%wx%h' info: 2>/dev/null || true)"
-    if [[ "$axis" == height ]]; then size="${geometry#*x}"; else size="${geometry%x*}"; fi
-    if [[ ! "$size" =~ ^[0-9]+$ ]] || (( size < min || size > max )); then
+    geometry="$(magick "$out/$name.png" -crop "$crop" +repage -fuzz 3% -trim -format '%wx%h' info: 2> /dev/null || true)"
+    if [[ $axis == height ]]; then size="${geometry#*x}"; else size="${geometry%x*}"; fi
+    if [[ ! $size =~ ^[0-9]+$ ]] || ((size < min || size > max)); then
         echo "$name: the widget draws ${geometry:-nothing}, expected a $axis of $min to $max px" >&2
         failed=1
     fi
@@ -48,8 +48,8 @@ expect_extent() {
 expect_sources() {
     local want have
     want="$(printf '%s\n' "$@" | sort | tr '\n' ';')"
-    have="$({ cat "$CODEXBAR_MOCK_STATE.sources" 2>/dev/null || echo "claude oauth"; } | sort | tr '\n' ';')"
-    if [[ "$want" != "$have" ]]; then
+    have="$({ cat "$CODEXBAR_MOCK_STATE.sources" 2> /dev/null || echo "claude oauth"; } | sort | tr '\n' ';')"
+    if [[ $want != "$have" ]]; then
         echo "config.json stores the sources [$have], expected [$want]" >&2
         failed=1
     fi
@@ -69,8 +69,8 @@ render() {
     local name="$1" pkg="$2" size="$3"
     shift 3
     rm -f "$CODEXBAR_MOCK_STATE" "$CODEXBAR_MOCK_STATE.calls"
-    if [[ -n "${config_state:-}" ]]; then
-        tr ' ' '\n' <<<"$config_state" >"$CODEXBAR_MOCK_STATE"
+    if [[ -n ${config_state:-} ]]; then
+        tr ' ' '\n' <<< "$config_state" > "$CODEXBAR_MOCK_STATE"
     fi
     plasmoidviewer -a "$pkg" -s "$size" "$@" > "$out/$name.log" 2>&1 &
     local pid=$!
@@ -111,6 +111,27 @@ render panel-pace-quiet "$(package pace-quiet "$three" panelDisplayMode=logos sh
 render panel-vertical "$(package vertical "$three" showPercentInPanel=true showResetCountdown=true \
     separateIcons=true)" 160x520 -c org.kde.panel -f vertical -l leftedge
 expect_extent panel-vertical width 40 120 160x460+0+0
+# Balances in the panel label (#73): Replicate reports no quota window, so it
+# shows its balance instead of "–", and Claude's override asks for its extra
+# usage balance instead of the percentage. Codex keeps its percentage.
+balances=(enabledProviders="codex,claude,replicate" showPercentInPanel=true
+    'providerOverrides={"claude":{"panelValue":"balance"}}')
+config_state="codex claude replicate" render panel-balance "$(package balance-panel "${balances[@]}" \
+    panelDisplayMode=logos)" 640x140 "${panel[@]}"
+expect_extent panel-balance height 16 40 640x88+0+0
+config_state="codex claude replicate" render panel-balance-vertical "$(package balance-vertical \
+    "${balances[@]}" separateIcons=true)" 160x520 -c org.kde.panel -f vertical -l leftedge
+expect_extent panel-balance-vertical width 40 160 160x460+0+0
+# A provider whose refresh fails gets a warning emblem on its panel icon
+# (#74). Antigravity's CLI process crashes here, so its logo warns.
+CODEXBAR_MOCK_CRASH=antigravity render panel-stale "$(package stale "$three" panelDisplayMode=logos \
+    showPercentInPanel=true)" 640x140 "${panel[@]}"
+expect_extent panel-stale height 16 40 640x88+0+0
+# The merged meter warns too, as Antigravity could be lower than the value
+# it shows.
+CODEXBAR_MOCK_CRASH=antigravity render panel-stale-merged "$(package stale-merged "$three" \
+    showPercentInPanel=true)" 640x140 "${panel[@]}"
+expect_extent panel-stale-merged height 16 40 640x88+0+0
 render popup "$(package popup "$three")" 560x860 -f planar
 render popup-used "$(package popup-used "$three" usageBarsShowUsed=true)" 560x860 -f planar
 # A provider only config.json knows, such as a user plugin, still shows up.
@@ -127,6 +148,10 @@ config_state="antigravity" CODEXBAR_MOCK_CRASH=antigravity render popup-crash \
 expect_config antigravity
 # A prepaid balance in usage.providerCost shows on the provider's card (#58).
 config_state="claude" render popup-balance "$(package balance enabledProviders=claude)" 560x860 -f planar
+# A detail-backed window takes the CLI's name for it (TrustedRouter's "Limit")
+# and shows its detail ("$1.80 / $10.00") instead of "Resets …".
+config_state="trustedrouter" render popup-detail "$(package detail enabledProviders=trustedrouter)" \
+    560x860 -f planar
 # A config.json the CLI cannot write: the migration fails, the widget keeps
 # its own list, and the popup shows the CLI's error.
 CODEXBAR_MOCK_READONLY=1 render popup-readonly "$(package readonly "$three")" 560x860 -f planar
@@ -196,17 +221,17 @@ import -window root "$out/popup-about.before.png"
 xdotool mousemove 72 506 click 1 mousemove 559 859
 sleep 3
 shoot popup-about 560x860
-if magick compare -metric AE "$out/popup-about.before.png" "$out/popup-about.screen.png" null: 2>/dev/null; then
+if magick compare -metric AE "$out/popup-about.before.png" "$out/popup-about.screen.png" null: 2> /dev/null; then
     echo "About CodexBar did not open the About page" >&2
     failed=1
 fi
 # A click that lands on "Settings…" instead also changes the screen.
-if xdotool search --name 'CodexBar Settings' >/dev/null 2>&1; then
+if xdotool search --name 'CodexBar Settings' > /dev/null 2>&1; then
     echo "The About click opened the settings window" >&2
     failed=1
 fi
-kill "$about_pid" 2>/dev/null || true
-wait "$about_pid" 2>/dev/null || true
+kill "$about_pid" 2> /dev/null || true
+wait "$about_pid" 2> /dev/null || true
 
 # The settings window: the General and Providers pages, and the override
 # dialog of Claude, whose seeded override gives it a ticked row.
@@ -284,7 +309,7 @@ wait "$external_pid" 2> /dev/null || true
 rm -f "$CODEXBAR_MOCK_STATE" "$CODEXBAR_MOCK_STATE.sources" "$CODEXBAR_MOCK_STATE.calls"
 CODEXBAR_MOCK_VERSION=0.73.0 plasmoidviewer \
     -a "$(package sources "$three" providerSources=claude=cli,codex=api)" -s 560x860 -f planar \
-    >"$out/settings-sources.log" 2>&1 &
+    > "$out/settings-sources.log" 2>&1 &
 sources_pid=$!
 sleep "${SMOKE_WAIT:-15}"
 expect_sources "claude oauth" "codex api"
@@ -296,7 +321,7 @@ fi
 xdotool mousemove 60 474 click 1
 sleep 5
 sources_window="$(xdotool search --name 'CodexBar Settings' | head -n 1)"
-if [[ -z "$sources_window" ]]; then
+if [[ -z $sources_window ]]; then
     echo "The settings window did not open" >&2
     failed=1
 else
@@ -310,8 +335,8 @@ else
     expect_config codex claude antigravity
     expect_sources "claude oauth" "codex api"
 fi
-kill "$sources_pid" 2>/dev/null || true
-wait "$sources_pid" 2>/dev/null || true
+kill "$sources_pid" 2> /dev/null || true
+wait "$sources_pid" 2> /dev/null || true
 rm -f "$CODEXBAR_MOCK_STATE.sources" "$CODEXBAR_MOCK_STATE.calls"
 
 # QML runtime errors from the widget's own files fail the test, and so does
@@ -323,4 +348,4 @@ if [[ -n $errors ]]; then
     exit 1
 fi
 [[ $failed == 0 ]] || exit 1
-echo "Rendered: $(cd "$out" && ls ./*.png | tr '\n' ' ')"
+echo "Rendered: $(cd "$out" && printf '%s ' ./*.png)"
